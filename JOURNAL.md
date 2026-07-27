@@ -10,6 +10,70 @@
 
 ---
 
+## 2026-07-27 — M0 完了 (`4899d9e`)
+
+### やったこと
+
+- rustup 導入 → **rustc 1.97.1** (stable, default profile なので clippy/rustfmt 同梱)
+- `~/.bashrc` に `. "$HOME/.cargo/env"` を追加（rustup の既定挙動を明示的に実施）
+- `git init` → workspace 雛形 5 クレート + justfile + .gitignore + README + config.example.json
+- `just oracle` で Go 版 oracle をビルドする仕組みを整備
+
+### 検証結果（すべて green）
+
+```
+cargo build --workspace                              → OK
+cargo build --workspace --no-default-features        → OK  (= go build -tags noanchor)
+cargo clippy --workspace --all-targets -- -D warnings → 無警告
+cargo fmt --all --check                              → clean
+cargo test --workspace                               → OK (テストはまだ 0 件)
+just oracle-check                                    → oracle 2 種ビルド + Go テスト全 pass
+                                                       go-jmapserver の 39a4d0e からの drift なし
+```
+
+### 判断とその理由
+
+**workspace を 5 クレートに分けた。** 1 クレートに全部入れても動くが、
+`crates/jmapserver` から `jmapsmtp` 固有の型を参照しない制約（§8-F-2、将来の切り出し用）を
+**コンパイラに強制させたい**ため。人間の規律に頼ると必ず漏れる。
+
+**各 stub には「何を入れるか + 移植元の Go ファイル」だけ書いた。**
+中身が空でも、ファイルを開けば担当範囲がわかる状態にしておく。
+
+**`oracle/` は .gitignore。** リポジトリ外の 2 つの Go リポジトリからのビルド生成物であって、
+このリポジトリの成果物ではない。代わりに `justfile` に再現手順を持たせた。
+`just oracle-check` は go-jmapserver の drift（`git log 39a4d0e..HEAD`）も報告する（§8-A' 対策）。
+
+**clippy は `correctness` / `suspicious` のみ deny。**
+移植は Go の制御フローを意図的になぞる（§8-D）ので、`pedantic` や `style` の
+「もっと Rust らしく書け」という指摘は移植中はノイズになる。
+バグを示すカテゴリだけ硬いエラーにした。
+
+### 詰まった点
+
+**lettre の feature 指定でビルド失敗。** `default-features = false` +
+`["smtp-transport", "tokio1-rustls", "builder"]` だけでは
+「crypto provider が無い」「cert verifier が無い」で `compile_error!`。
+
+→ `ring` + **`rustls-native-certs`** を追加。`webpki-roots` ではなく native を選んだのは、
+Go の `crypto/tls` が OS の root store を使うため。送信 STARTTLS の信頼判断を Go 版と揃える。
+
+### 気づいた点（後で対処）
+
+- **hickory-resolver が 2 バージョン入っている**: 自前指定の `0.25.2` と、
+  `mail-auth` が引く `0.26.0-alpha.1`。ビルドは通るがコンパイル時間の無駄。
+  M5 で MX 解決を書くとき、`mail-auth` 内蔵の Resolver を使えば自前の hickory 依存を
+  外せるかもしれない。**M5 で判断する**
+- 依存解決の実績バージョン: `pgp 0.16.0` / `mail-parser 0.11.5` / `mail-auth 0.7.5` /
+  `htmd 0.2.2` / `axum 0.8` / `rustc 1.97.1`
+
+### 次
+
+**M1: 差分ハーネス。** `xtask difftest --both-oracle`（oracle 対 oracle）が green に
+なるまでが M1 の本体。正規化フィルタの設計がすべて。
+
+---
+
 ## 2026-07-27 — 決定事項の確定、M0 着手
 
 ### ユーザ確定事項
