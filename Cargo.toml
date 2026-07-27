@@ -1,0 +1,105 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/cryptenv",
+    "crates/jmap-types",
+    "crates/jmapserver",
+    "crates/jmapsmtp",
+    "xtask",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.90"
+license = "MIT"
+repository = "https://github.com/yno9/jmapsmtp"
+
+# Every dependency the port needs is declared here and inherited by the member
+# crates with `workspace = true`, so a version bump happens in one place. The
+# mapping from each of these to the Go package it replaces is in PLAN.md §4.
+[workspace.dependencies]
+# ── async runtime / HTTP ──────────────────────────────────────────────────
+tokio = { version = "1", features = ["full"] }
+axum = "0.8"
+tower = "0.5"
+tower-http = { version = "0.6", features = ["fs"] }
+hyper = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+# ── serialization ─────────────────────────────────────────────────────────
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["raw_value", "preserve_order"] }
+
+# ── crypto ────────────────────────────────────────────────────────────────
+argon2 = "0.5"
+aes-gcm = "0.10"
+hkdf = "0.12"
+sha2 = "0.10"
+sha1 = "0.10"
+hmac = "0.12"
+subtle = "2"
+rand = "0.9"
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+rsa = { version = "0.9", features = ["sha2"] }
+pkcs8 = { version = "0.10", features = ["pem"] }
+base64 = "0.22"
+hex = "0.4"
+
+# ── mail ──────────────────────────────────────────────────────────────────
+mail-parser = "0.11"
+mail-builder = "0.4"
+mail-auth = "0.7"
+# `rustls-native-certs` (not webpki-roots) so outbound STARTTLS trusts the same
+# system root store Go's crypto/tls does.
+lettre = { version = "0.11", default-features = false, features = [
+    "smtp-transport",
+    "tokio1-rustls",
+    "ring",
+    "rustls-native-certs",
+    "builder",
+] }
+pgp = "0.16"
+
+# ── TLS / certs ───────────────────────────────────────────────────────────
+tokio-rustls = "0.26"
+rustls = "0.23"
+rustls-pemfile = "2"
+rcgen = "0.14"
+
+# ── networking / DNS ──────────────────────────────────────────────────────
+hickory-resolver = "0.25"
+
+# ── observability ─────────────────────────────────────────────────────────
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+prometheus = "0.14"
+
+# ── misc ──────────────────────────────────────────────────────────────────
+anyhow = "1"
+thiserror = "2"
+regex = "1"
+walkdir = "2"
+parking_lot = "0.12"
+web-push = "0.10"
+htmd = "0.2"
+
+# ── dev / test ────────────────────────────────────────────────────────────
+proptest = "1"
+pretty_assertions = "1"
+tempfile = "3"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+# The port mirrors Go's control flow closely on purpose (PLAN.md §8-D), so
+# clippy's stylistic suggestions are advisory, not gospel. Correctness and
+# suspicious lints stay hard errors.
+correctness = { level = "deny", priority = -1 }
+suspicious = { level = "deny", priority = -1 }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "debuginfo"

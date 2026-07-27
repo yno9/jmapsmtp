@@ -1,0 +1,20 @@
+# build artifacts
+/target/
+**/*.rs.bk
+
+# runtime data
+data/
+*.log
+/tmp/jmapsmtp-last-*.eml
+
+# secrets
+config.json
+*.pem
+*.key
+
+# the Go reference implementation (oracle) — built from ~/go-jmapsmtp +
+# ~/go-jmapserver by `just oracle`. Never committed: it is a build product of
+# two repositories that live outside this one. See PLAN.md §2.3.
+/oracle/
+
+# editor / tooling

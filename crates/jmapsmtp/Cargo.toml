@@ -1,0 +1,70 @@
+[package]
+name = "jmapsmtp"
+description = "SMTP <-> JMAP bridge. Port of github.com/yno9/go-jmapsmtp."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "jmapsmtp"
+path = "src/main.rs"
+
+[features]
+default = ["anchor"]
+anchor = ["jmapserver/anchor", "dep:reqwest"]
+
+[dependencies]
+cryptenv = { path = "../cryptenv" }
+jmap-types = { path = "../jmap-types" }
+jmapserver = { path = "../jmapserver", default-features = false }
+
+tokio.workspace = true
+axum.workspace = true
+tower.workspace = true
+tower-http.workspace = true
+reqwest = { workspace = true, optional = true }
+
+serde.workspace = true
+serde_json.workspace = true
+
+argon2.workspace = true
+sha2.workspace = true
+sha1.workspace = true
+hmac.workspace = true
+ed25519-dalek.workspace = true
+rsa.workspace = true
+pkcs8.workspace = true
+base64.workspace = true
+hex.workspace = true
+rand.workspace = true
+
+mail-parser.workspace = true
+mail-builder.workspace = true
+mail-auth.workspace = true
+lettre.workspace = true
+pgp.workspace = true
+
+tokio-rustls.workspace = true
+rustls.workspace = true
+rustls-pemfile.workspace = true
+rcgen.workspace = true
+hickory-resolver.workspace = true
+
+tracing.workspace = true
+tracing-subscriber.workspace = true
+prometheus.workspace = true
+parking_lot.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+regex.workspace = true
+walkdir.workspace = true
+
+[dev-dependencies]
+pretty_assertions.workspace = true
+tempfile.workspace = true
+proptest.workspace = true
+
+[lints]
+workspace = true
