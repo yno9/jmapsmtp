@@ -10,6 +10,94 @@
 
 ---
 
+## 2026-07-28 — M1 完了 (`0b11dea`)
+
+### 成果物
+
+- `xtask difftest` — 差分ハーネス（`xtask/src/difftest/` 6 ファイル）
+- `SPEC.md` — ハーネスで検証**できない**事項の記録
+- `xtask/fixtures/` — 決定性のために両サイドへ配る固定鍵
+
+```
+just difftest-selftest → 4 変異すべて検出
+just difftest-oracle   → 46 ステップ差分なし
+just difftest          → oracle 対 Rust（M4 以降で使う）
+just difftest-filters  → 正規化フィルタ一覧を表示
+```
+
+### 判断 1: 「正規化するより、決定的に仕込む」
+
+リレーは初回起動時に DKIM 鍵・自己署名 TLS 証明書・setup トークンを**ランダム生成**する。
+放置すると 3 つとも両サイドで食い違い、それを潰すフィルタが必要になる。
+だがそのフィルタは**鍵の扱いを間違えた本物のバグも同時に隠す**。
+
+→ fixture 側で全部**事前に配る**ことにした。フィルタが 1 つ減るたびに
+死角が 1 つ減る。
+
+同じ理屈で `base_url`。**両サイドで同一の `base_url`**（`http://relay.difftest.invalid`）を
+使い、`listen_addr` だけ変える。JMAP Session レスポンスは `base_url` を
+`apiUrl`/`downloadUrl`/`uploadUrl` に echo する（server.go:311）ので、
+ポートを変えると URL フィルタが要る → **間違った URL が素通りする**ようになる。
+
+### 判断 2: 「落ちないハーネスは、無いより悪い」
+
+`--both-oracle` が**一発目で green になった**。喜ぶところではなく、
+**「何も比較していないハーネス」と区別がつかない**状態。
+
+→ `--self-test` を追加（当初計画に無し）。oracle を意図的に壊したコピーと比較し、
+比較軸ごとに 1 つずつ変異を用意して**全部検出されること**を要求する:
+
+| 変異 | 壊す対象 | 検出数 |
+|---|---|---:|
+| `RelayLabel` | レスポンスボディ | 1 |
+| `BaseUrl` | Session レスポンス | 3 |
+| `ExtraDataFile` | `data/` ツリー | 1 |
+| `BreakCredential` | 認証経路 | 78 |
+
+**そしてこれが実際にバグを見つけた。** シナリオの WKD ステップが
+`8xnqfyeqrbanrhqoq5b6ba6a1kzjxfyy` を「zbase32(sha1("alice"))」と称していたが、
+Go 実装で実際に計算すると `kei1q4tipxxu1yj79k9kfukdhfy631xe`。
+つまり**ハッシュ一致分岐をテストしているつもりで、不一致分岐をテストしていた**。
+3 ステップ（一致 / 不一致 / localpart なし）に分割して修正。
+
+### 判断 3: SPEC.md には「ハーネスで検証できないこと」だけ書く
+
+当初計画では SPEC.md を全仕様の網羅文書にするつもりだったが、
+ハーネスが動く以上、HTTP レスポンスの正解は **oracle が生成する transcript** であって
+文章ではない。両方に書くと**必ず片方が腐る**。
+
+→ SPEC.md の守備範囲を「リクエストを投げるだけでは観測できない事柄」に限定した:
+起動シーケンスの順序、6 時間周期の purge、凍結された暗号定数、ディスク形式の**意味**、
+SMTP プロトコル挙動、メッセージ変換パイプラインの段構成、外部サービス通信。
+
+### ハーネスが早速ピン留めした Go 版の癖
+
+- **CORS ヘッダがルートごとに違う**。`/jmap/api/` は `GET, POST, OPTIONS`、
+  `WrapCORS` 経由の 404 は `GET, POST, PUT, OPTIONS`。
+  汎用ミドルウェアで統一すると壊れる（PLAN.md §5.1 の警告が実物で確認できた）
+- **`Email/set` の create は `messages/` に何も書かない**。`OnCreateEmail` が
+  `PutPending` を呼ぶだけなので、submit されるまで永続化されない。
+  `newState` も `"0"` のまま動かない
+
+### 詰まった点
+
+なし。強いて言えば `--both-oracle` が一発で通ったことが最大の落とし穴だった（判断 2）。
+
+### 気づいた点（後で対処）
+
+- `transcript.txt` が実質「Go 版の振る舞いの読める仕様書」になっている。
+  M4 以降でシナリオを増やすほど価値が上がる。SPEC.md に書きたくなったら
+  まずシナリオに足せないか考える
+- シナリオは現状 46 ステップ。SMTP 配送（M5）、anchor 付き経路（M6）、
+  PGP 鍵をアップロードした状態の WKD（M6/M7）が未カバー
+
+### 次
+
+**M2: cryptenv。** 最初の縦切りで、暗号スタック（argon2 / aes-gcm / hkdf / subtle）の
+疎通確認を兼ねる。Go 版と `envelope.json` を相互に読ませる。
+
+---
+
 ## 2026-07-27 — M0 完了 (`4899d9e`)
 
 ### やったこと
