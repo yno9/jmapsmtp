@@ -29,7 +29,10 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 
 # ── serialization ─────────────────────────────────────────────────────────
 serde = { version = "1", features = ["derive"] }
-serde_json = { version = "1", features = ["raw_value", "preserve_order"] }
+# NOT preserve_order: Go's encoding/json sorts map keys, and serde_json's
+# default Map is a BTreeMap, which serialises sorted too. Preserving insertion
+# order would diverge from every Go-written file on disk.
+serde_json = { version = "1", features = ["raw_value"] }
 
 # ── crypto ────────────────────────────────────────────────────────────────
 argon2 = "0.5"
@@ -45,6 +48,9 @@ rsa = { version = "0.9", features = ["sha2"] }
 pkcs8 = { version = "0.10", features = ["pem"] }
 base64 = "0.22"
 hex = "0.4"
+# Timestamps are stored as the string Go wrote; this is only for ordering and
+# for formatting new ones (see jmap-types/src/time.rs).
+time = { version = "0.3", features = ["parsing", "formatting", "macros"] }
 
 # ── mail ──────────────────────────────────────────────────────────────────
 mail-parser = "0.11"

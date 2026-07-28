@@ -257,13 +257,53 @@ pub fn snapshot_data(root: &Path) -> Result<BTreeMap<String, String>> {
                 .into_owned();
             let bytes = std::fs::read(&path)?;
             let value = match String::from_utf8(bytes) {
-                Ok(text) => normalize::normalize(&text),
+                Ok(text) => {
+                    // delta.json's change-record arrays are built by ranging
+                    // over a Go map, so their order is whatever that run's
+                    // hash seed produced — two Go runs disagree with each
+                    // other. Sorting compares what the records are (sets of
+                    // ids) and leaves every other byte strictly compared.
+                    let text = if rel.ends_with("delta.json") {
+                        sort_json_arrays(&text)
+                    } else {
+                        text
+                    };
+                    normalize::normalize(&text)
+                }
                 Err(e) => format!("<binary, {} bytes>", e.as_bytes().len()),
             };
             out.insert(rel, value);
         }
     }
     Ok(out)
+}
+
+/// Sort every array in a JSON document, recursively. Returns the input
+/// unchanged when it does not parse.
+fn sort_json_arrays(json: &str) -> String {
+    fn walk(v: &mut serde_json::Value) {
+        match v {
+            serde_json::Value::Array(items) => {
+                for i in items.iter_mut() {
+                    walk(i);
+                }
+                items.sort_by_key(std::string::ToString::to_string);
+            }
+            serde_json::Value::Object(map) => {
+                for (_, i) in map.iter_mut() {
+                    walk(i);
+                }
+            }
+            _ => {}
+        }
+    }
+    match serde_json::from_str::<serde_json::Value>(json) {
+        Ok(mut v) => {
+            walk(&mut v);
+            serde_json::to_string(&v).unwrap_or_else(|_| json.to_string())
+        }
+        Err(_) => json.to_string(),
+    }
 }
 
 /// A minimal line-by-line diff. Not an LCS — for these payloads a positional

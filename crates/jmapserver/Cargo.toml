@@ -16,6 +16,7 @@ anchor = ["dep:reqwest"]
 
 [dependencies]
 jmap-types = { path = "../jmap-types" }
+time.workspace = true
 
 tokio.workspace = true
 axum.workspace = true
@@ -46,6 +47,7 @@ walkdir.workspace = true
 
 [dev-dependencies]
 pretty_assertions.workspace = true
+serde.workspace = true
 tempfile.workspace = true
 proptest.workspace = true
 
