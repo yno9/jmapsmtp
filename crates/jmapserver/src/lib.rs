@@ -7,6 +7,9 @@
 //! plan is to split it back out into its own repository once the ActivityPub
 //! relay (go-jmapap) is ported too (PLAN.md §8-F-2).
 
+pub mod authtoken;
+pub mod devicekeys;
+pub mod diddht;
 pub mod dispatch;
 pub mod methods;
 pub mod mime;
@@ -14,6 +17,8 @@ pub mod refs;
 pub mod server;
 pub mod store;
 
+pub use authtoken::{decode_auth_token, hash_auth_token, verify_auth_token};
+pub use devicekeys::DeviceKey;
 pub use methods::{MethodError, MethodResult};
 pub use mime::{Attachment, build_envelope, extract_attachments, message_body, parse_mime_email};
 pub use server::{Account, AuthFn, Config, Handler, Hub, Server};

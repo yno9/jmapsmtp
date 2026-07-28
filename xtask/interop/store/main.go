@@ -9,6 +9,7 @@
 //	dump <dir>       open <dir> and print what the Go Store sees, as JSON
 //	dispatch <dir>   read a JMAP method-call script from stdin, run it through
 //	                 the real Store.Dispatch, and print the results
+//	devices <dir>    exercise the real device-key and session-token store
 package main
 
 import (
@@ -62,6 +63,8 @@ func main() {
 		emit(dumpStore(os.Args[2]))
 	case "dispatch":
 		dispatch(os.Args[2])
+	case "devices":
+		devices(os.Args[2])
 	default:
 		fail("unknown command %q", os.Args[1])
 	}
@@ -193,6 +196,82 @@ func dispatch(dir string) {
 			fail("marshal %s: %v", c.Method, mErr)
 		}
 		out = append(out, outcome{Method: c.Method, Result: b})
+	}
+	emit(out)
+}
+
+// deviceOp is one step of the device-key script read from stdin.
+type deviceOp struct {
+	Op    string `json:"op"`
+	ID    string `json:"id,omitempty"`
+	Label string `json:"label,omitempty"`
+	// For session operations.
+	Token  string `json:"token,omitempty"`
+	TTLSec int    `json:"ttl_sec,omitempty"`
+	// For a session login.
+	DID string `json:"did,omitempty"`
+	TS  int64  `json:"ts,omitempty"`
+	Sig string `json:"sig,omitempty"`
+}
+
+type deviceResult struct {
+	Op       string                 `json:"op"`
+	Devices  []jmapserver.DeviceKey `json:"devices,omitempty"`
+	Token    string                 `json:"token,omitempty"`
+	DeviceID string                 `json:"device_id,omitempty"`
+	OK       bool                   `json:"ok"`
+	Err      string                 `json:"err,omitempty"`
+}
+
+// devices runs a script against the real devicekeys.go, so the Rust side can
+// be checked against the files it actually writes and reads.
+func devices(dir string) {
+	var script []deviceOp
+	if err := json.NewDecoder(os.Stdin).Decode(&script); err != nil {
+		fail("read script: %v", err)
+	}
+	out := []deviceResult{}
+	for _, op := range script {
+		r := deviceResult{Op: op.Op}
+		switch op.Op {
+		case "write":
+			err := jmapserver.WriteDeviceKey(dir, jmapserver.DeviceKey{
+				ID: op.ID, Label: op.Label, CreatedAt: op.TS,
+			})
+			r.OK = err == nil
+			if err != nil {
+				r.Err = err.Error()
+			}
+		case "list":
+			r.Devices = jmapserver.ListDeviceKeys(dir)
+			r.OK = true
+		case "remove":
+			err := jmapserver.RemoveDeviceKey(dir, op.ID)
+			r.OK = err == nil
+			if err != nil {
+				r.Err = err.Error()
+			}
+		case "issue":
+			ttl := time.Duration(op.TTLSec) * time.Second
+			token, err := jmapserver.IssueSessionToken(dir, op.ID, ttl)
+			r.Token = token
+			r.OK = err == nil
+			if err != nil {
+				r.Err = err.Error()
+			}
+		case "check":
+			id, ok := jmapserver.CheckSessionToken(dir, op.Token)
+			r.DeviceID = id
+			r.OK = ok
+		case "session_login":
+			r.OK = jmapserver.VerifyDeviceSession(dir, op.DID, op.ID, op.TS, op.Sig, time.Now())
+		case "vouch_local":
+			r.OK = jmapserver.VerifyDidDhtVouchLocal(
+				op.DID, op.ID, op.Label, op.TS, op.Sig, time.Now().Unix())
+		default:
+			fail("unknown device op %q", op.Op)
+		}
+		out = append(out, r)
 	}
 	emit(out)
 }
