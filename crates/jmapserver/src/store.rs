@@ -23,13 +23,16 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use jmap_types::email::Email;
+use jmap_types::emailsubmission::Envelope;
 use jmap_types::mailbox::Mailbox;
 use jmap_types::{Id, JmapTime, go_json};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use serde_json::value::RawValue;
 
 /// Records message ids added, updated or removed at a single state version.
 ///
@@ -96,6 +99,10 @@ struct Inner {
     state: i64,
     changes: BTreeMap<i64, ChangeRecord>,
     identities: Vec<JsonObject>,
+    /// **Not persisted**, matching Go: `identityState` is absent from
+    /// `persistedState`, so it resets to 0 on restart while the identities
+    /// themselves survive.
+    identity_state: i64,
     mailbox_state: i64,
     mailbox_changes: BTreeMap<i64, MailboxChangeRecord>,
     /// Content-addressed, in-memory only — blobs do not survive a restart in
@@ -107,10 +114,40 @@ struct Inner {
     vacation: Option<JsonObject>,
 }
 
+/// Hooks the owning application installs to take part in `*/set` handling.
+///
+/// Each mirrors one `Store.On*` setter in the Go original. They are held
+/// behind their own lock, never `inner`'s: a hook calls back into the store
+/// (`OnCreateEmail` ends with `PutPending`), so holding the data lock across
+/// one would deadlock.
+/// Called for each `Email/set` create. Returns the created Email.
+pub type CreateEmailHook = Arc<dyn Fn(&RawValue) -> Result<Email, String> + Send + Sync>;
+/// Called for each `EmailSubmission/set` create.
+pub type SubmitEmailHook = Arc<dyn Fn(Email, Envelope) -> Result<(), String> + Send + Sync>;
+/// `op` is "create", "update" or "destroy"; the object is `None` on destroy.
+pub type SetIdentityHook =
+    Arc<dyn Fn(&str, &Id, Option<&JsonObject>) -> Result<(), String> + Send + Sync>;
+/// `op` is "create" or "destroy"; the mailbox is `None` on destroy.
+pub type SetMailboxHook =
+    Arc<dyn Fn(&str, &Id, Option<&Mailbox>) -> Result<(), String> + Send + Sync>;
+pub type DestroyEmailHook = Arc<dyn Fn(&Id) -> Result<(), String> + Send + Sync>;
+pub type UpdateEmailHook = Arc<dyn Fn(&Id, &JsonObject) -> Result<(), String> + Send + Sync>;
+
+#[derive(Default, Clone)]
+pub struct Hooks {
+    pub create_email: Option<CreateEmailHook>,
+    pub submit_email: Option<SubmitEmailHook>,
+    pub set_identity: Option<SetIdentityHook>,
+    pub set_mailbox: Option<SetMailboxHook>,
+    pub destroy_email: Option<DestroyEmailHook>,
+    pub update_email: Option<UpdateEmailHook>,
+}
+
 pub struct Store {
     dir: PathBuf,
     state_file: PathBuf,
     inner: RwLock<Inner>,
+    hooks: RwLock<Hooks>,
 }
 
 impl Store {
@@ -143,10 +180,21 @@ impl Store {
             state_file: dir.join("delta.json"),
             dir,
             inner: RwLock::new(inner),
+            hooks: RwLock::new(Hooks::default()),
         };
         store.load_state();
         store.load_identities();
         Ok(store)
+    }
+
+    /// Install hooks. Called once during setup, before the store serves.
+    pub fn set_hooks(&self, hooks: Hooks) {
+        *self.hooks.write() = hooks;
+    }
+
+    /// A snapshot of the hooks, cloned so no lock is held while one runs.
+    pub fn hooks(&self) -> Hooks {
+        self.hooks.read().clone()
     }
 
     // ── state persistence ─────────────────────────────────────────────────
@@ -498,7 +546,8 @@ impl Store {
         self.inner.read().mailbox_changes.clone()
     }
 
-    fn bump_mailbox_state(&self, rec: MailboxChangeRecord) {
+    /// Advance the mailbox state and record what changed.
+    pub fn bump_mailbox_state(&self, rec: MailboxChangeRecord) {
         let mut inner = self.inner.write();
         inner.mailbox_state += 1;
         let state = inner.mailbox_state;
@@ -527,6 +576,21 @@ impl Store {
 
     pub fn identities(&self) -> Vec<JsonObject> {
         self.inner.read().identities.clone()
+    }
+
+    pub fn identity_state(&self) -> String {
+        self.inner.read().identity_state.to_string()
+    }
+
+    /// Replace the identity list and bump its state by `bumps`. Used by
+    /// `Identity/set`, which counts one bump per accepted operation.
+    pub fn replace_identities(&self, ids: Vec<JsonObject>, bumps: i64) {
+        let mut inner = self.inner.write();
+        inner.identities = ids;
+        inner.identity_state += bumps;
+        if let Ok(bytes) = go_json::to_vec(&inner.identities) {
+            let _ = write_file(&self.identities_path(), &bytes);
+        }
     }
 
     pub fn set_identities(&self, ids: Vec<JsonObject>) {

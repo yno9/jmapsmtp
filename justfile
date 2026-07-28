@@ -24,7 +24,7 @@ build-noanchor:
 # Runs the Go interop tests for real. Plain `cargo test` skips them when the
 # helper is absent (see crates/cryptenv/tests/interop.rs).
 test: interop
-    CRYPTENV_INTEROP=required STORE_INTEROP=required cargo test --workspace
+    CRYPTENV_INTEROP=required STORE_INTEROP=required DISPATCH_INTEROP=required cargo test --workspace
 
 # Everything except the Go interop tests, for when the Go toolchain is absent.
 test-rust-only:

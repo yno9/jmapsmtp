@@ -5,8 +5,10 @@
 // Rust side (crates/jmapserver/tests/store_interop.rs) drives it to check
 // that a data directory written by either implementation loads in the other.
 //
-//	seed <dir>   populate <dir> with a known set of messages and state
-//	dump <dir>   open <dir> and print what the Go Store sees, as JSON
+//	seed <dir>       populate <dir> with a known set of messages and state
+//	dump <dir>       open <dir> and print what the Go Store sees, as JSON
+//	dispatch <dir>   read a JMAP method-call script from stdin, run it through
+//	                 the real Store.Dispatch, and print the results
 package main
 
 import (
@@ -19,6 +21,7 @@ import (
 	"git.sr.ht/~rockorager/go-jmap/mail"
 	"git.sr.ht/~rockorager/go-jmap/mail/email"
 	"git.sr.ht/~rockorager/go-jmap/mail/mailbox"
+	"git.sr.ht/~rockorager/go-jmap/mail/emailsubmission"
 	jmapserver "github.com/yno9/go-jmapserver"
 )
 
@@ -57,6 +60,8 @@ func main() {
 		seed(os.Args[2])
 	case "dump":
 		emit(dumpStore(os.Args[2]))
+	case "dispatch":
+		dispatch(os.Args[2])
 	default:
 		fail("unknown command %q", os.Args[1])
 	}
@@ -134,6 +139,62 @@ func seed(dir string) {
 	}
 
 	store.AddSubmission(map[string]any{"id": "sub-1", "emailId": "msg-parent"})
+}
+
+// call is one entry of the script read from stdin.
+type call struct {
+	Method string          `json:"method"`
+	Args   json.RawMessage `json:"args"`
+}
+
+// outcome is what each call produced: exactly one of result or error.
+type outcome struct {
+	Method string          `json:"method"`
+	Result json.RawMessage `json:"result,omitempty"`
+	Error  string          `json:"error,omitempty"`
+}
+
+// dispatch runs a script against a freshly seeded store, so both
+// implementations start from identical state. Hooks are installed because
+// Email/set create and EmailSubmission/set do nothing without them, and they
+// are the two calls that matter most; each is deliberately trivial and
+// deterministic so the comparison is about Dispatch, not about the hook.
+func dispatch(dir string) {
+	seed(dir)
+	store, err := jmapserver.NewStore(dir)
+	if err != nil {
+		fail("NewStore: %v", err)
+	}
+	store.OnCreateEmail(func(raw json.RawMessage) (email.Email, error) {
+		var m email.Email
+		if err := json.Unmarshal(raw, &m); err != nil {
+			return email.Email{}, err
+		}
+		m.ID = "msg-created"
+		store.PutPending(m)
+		return m, nil
+	})
+	store.OnSubmitEmail(func(email.Email, emailsubmission.Envelope) error { return nil })
+
+	var script []call
+	if err := json.NewDecoder(os.Stdin).Decode(&script); err != nil {
+		fail("read script: %v", err)
+	}
+
+	out := []outcome{}
+	for _, c := range script {
+		res, err := store.Dispatch("alice@example.com", c.Method, c.Args)
+		if err != nil {
+			out = append(out, outcome{Method: c.Method, Error: err.Error()})
+			continue
+		}
+		b, mErr := json.Marshal(res)
+		if mErr != nil {
+			fail("marshal %s: %v", c.Method, mErr)
+		}
+		out = append(out, outcome{Method: c.Method, Result: b})
+	}
+	emit(out)
 }
 
 func dumpStore(dir string) dump {
