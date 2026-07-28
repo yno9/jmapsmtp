@@ -191,7 +191,7 @@ anchor = ["dep:reqwest"]   # anchor_on.go 相当
 | `sync.RWMutex` | `parking_lot::RwLock` / `tokio::sync::RwLock` | ハンドラ内の短いロックは parking_lot |
 | `encoding/json` | **serde / serde_json** | `json.RawMessage` → `serde_json::value::RawValue` |
 | `emersion/go-smtp` (受信) | **自前実装** (tokio + `tokio-rustls`) | 使っている機能は MAIL/RCPT/DATA/RSET/QUIT + STARTTLS + SMTPUTF8 のみ。Rust の既存 SMTP サーバ crate は保守状況が弱く、依存させるより 300 行書いた方が安全 |
-| `net/smtp` (送信) | **lettre** 0.11 | `SmtpTransport` + STARTTLS。生の RFC5322 バイト列をそのまま送る |
+| `net/smtp` (送信) | **自前実装** (tokio) | 当初 lettre を予定したが、**RCPT 拒否でも送信継続**という挙動を提供していない。複数宛先送信では「1 件 bounce したら全体失敗」は誤りなので自前にした (M5e) |
 | `net.LookupMX` / `LookupTXT` | **hickory-resolver** | MX (送信) / TXT (カスタムドメイン検証) |
 | `emersion/go-msgauth/dkim` | **mail-auth** | RSA-SHA256, relaxed/relaxed, ヘッダ選択に対応 |
 | `ProtonMail/go-crypto/openpgp` | **pgp** (rpgp) | keyring 読み込み / armor / インライン暗号化 |
@@ -456,7 +456,8 @@ HTTP 層（axum ルータ・CORS・SSE）と全体 difftest は **M6 に繰り�
 - **M5c（Autocrypt/PGP-MIME）完了 (`0f89e22`)** — 決定的 4 関数がバイト一致。
   **リモート DoS を発見**（SPEC §11.11）
 - **M5d（SMTP 受信サーバ）完了 (`e855d4a`)** — Go の `net/smtp` で配送できる
-- 残り: **SMTP 送信クライアント**、**PGP 暗号化本体**（rpgp 統合）
+- **M5e（SMTP 送信クライアント）完了 (`5544267`)** — 本物の go-smtp サーバが受理
+- 残り: **PGP 暗号化本体**（rpgp 統合）
 
 **完了条件**:
 1. **M1 のゴールデン**（Go 版が実際に出力した `ParseMIMEEmail` / `BuildRFC5322` の結果）に
