@@ -10,6 +10,72 @@
 
 ---
 
+## 2026-07-28 — M5c（Autocrypt / PGP-MIME）完了 (`0f89e22`)
+
+### 成果物
+
+- `crates/jmapsmtp/src/autocrypt.rs` — ヘッダ注入/解析、RFC 3156 ラップ
+- `autocrypt_interop` — 決定的な 4 関数を Go とバイト単位で比較
+
+テスト 165 件 green。
+
+### 見つけた: **リモート DoS**（M4 の Mailbox/set より重い）
+
+`pgpMIMEWrapInline` が BEGIN / END マーカーを**それぞれ独立に**検索し、
+「両方見つかった」しか確認しないまま `body[start : end+len(endMarker)]` する。
+本文で **END が BEGIN より前**にあると slice が逆走して panic:
+
+```
+panic: runtime error: slice bounds out of range [32:25]
+```
+
+到達経路が悪い:
+
+1. `sendEmail` は raw に BEGIN があれば必ず `pgpMIMEWrapInline` を呼ぶ
+2. `sendEmail` は `OnSubmitEmail` 内の **裸の `go func()`** から呼ばれる
+3. **回復されない goroutine の panic は Go プロセス全体を終了させる**
+
+本文は認証済み送信者が自由に決める値。**メール 1 通でリレー上の全アカウントが停止**。
+
+Rust は END を **BEGIN 以降から**探し、完全なブロックが無ければ
+`None`（ラップせずそのまま送る）。SPEC §11.11。
+
+**自分の実装も同じバグを持っていた** — Go を写したので当然で、
+corpus に「逆順マーカー」を入れて初めて両方で露見した。
+
+### 宣言済み差異の使い方が一段深まった
+
+Go 側ヘルパに `recover()` を入れて panic を**観測可能な結果**にした。
+テストは「Go は panic する / Rust は None を返す」の両方を要求する。
+
+- Go が直れば → テストが「もう panic しない」と教える
+- Rust が退行すれば → テストが落ちる
+
+本物のリレーには `recover()` は無い。ヘルパにあるのは**比較のためだけ**で、
+そのことをコメントに明記した。
+
+### Go ヘルパは verbatim コピー
+
+`autocrypt.go` の関数は `package main` の非公開なのでリンクできない。
+verbatim コピーを置いたが、**この比較自体がコピーの鮮度を保証する** —
+go-jmapsmtp 側が変われば赤くなる。信用ではなく検査。
+
+### 気づいた点
+
+- ヘッダ注入は「本文に `\nChat-Version:` があるだけ」でも既存扱いになる
+  （Go は `bytes.Contains` を raw 全体にかけている）。重複注入よりマシなので踏襲
+- PGP/MIME の boundary は**暗号文の sha1** なので出力が完全に決定的。
+  だから相互運用テストがバイト比較できる
+- 実際の OpenPGP 暗号化はセッション鍵がランダムなので、この方法では比較不能。
+  交差復号テストが必要（未着手）
+
+### 残り
+
+**SMTP 受信サーバ / 送信クライアント**、**PGP 暗号化本体**（rpgp 統合）、
+**config + main の起動シーケンス**（M6）。
+
+---
+
 ## 2026-07-28 — M5b（DKIM）完了 (`03592bf`)
 
 ### 成果物
