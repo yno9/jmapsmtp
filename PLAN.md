@@ -478,6 +478,10 @@ HTTP 層（axum ルータ・CORS・SSE）と全体 difftest は **M6 に繰り�
 - `customdomain.rs`: `/domain/verify-token`, `/domain/add`
 - `wkd.rs`: WKD + `/pgp/*`
 
+**進捗**: **M6a（認証プリミティブ）完了 (`1259cf2`)** —
+`authtoken` / `diddht` / `devicekeys` が両方向で相互運用。
+残り: config パース → 認証層 → axum ルータ → 起動シーケンス。
+
 **完了条件**:
 1. Go のテスト **45 本すべて**を Rust に移植して green。特に
    `anchorless_test.go` / `devices_test.go` / `provision_did_bound_test.go` /
