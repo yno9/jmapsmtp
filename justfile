@@ -21,7 +21,13 @@ build:
 build-noanchor:
     cargo build --workspace --no-default-features
 
-test:
+# Runs the Go interop tests for real. Plain `cargo test` skips them when the
+# helper is absent (see crates/cryptenv/tests/interop.rs).
+test: interop
+    CRYPTENV_INTEROP=required cargo test --workspace
+
+# Everything except the Go interop tests, for when the Go toolchain is absent.
+test-rust-only:
     cargo test --workspace
 
 lint:
@@ -47,6 +53,15 @@ oracle:
     cd oracle/go-jmapsmtp && go build -o ../jmapsmtp-oracle .
     cd oracle/go-jmapsmtp && go build -tags noanchor -o ../jmapsmtp-oracle-noanchor .
     @echo "oracle built: oracle/jmapsmtp-oracle"
+
+# Build the Go interop helpers used by the cross-implementation tests. They
+# link the real Go packages inside the oracle checkout rather than a
+# reimplementation, so they need `just oracle` to have run.
+interop: oracle
+    mkdir -p oracle/go-jmapsmtp/cmd/cryptenv-interop
+    cp xtask/interop/cryptenv/main.go oracle/go-jmapsmtp/cmd/cryptenv-interop/main.go
+    cd oracle/go-jmapsmtp && go build -o ../cryptenv-interop ./cmd/cryptenv-interop
+    @echo "interop helpers built"
 
 # Confirm the oracle still builds, its tests pass, and go-jmapserver has not
 # drifted from the revision this port was written against.
