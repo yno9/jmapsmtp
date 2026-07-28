@@ -455,7 +455,8 @@ HTTP 層（axum ルータ・CORS・SSE）と全体 difftest は **M6 に繰り�
 - **M5b（DKIM）完了 (`03592bf`)** — Go の検証器が Rust の署名を受理
 - **M5c（Autocrypt/PGP-MIME）完了 (`0f89e22`)** — 決定的 4 関数がバイト一致。
   **リモート DoS を発見**（SPEC §11.11）
-- 残り: **SMTP 受信サーバ / 送信クライアント**、**PGP 暗号化本体**（rpgp 統合）
+- **M5d（SMTP 受信サーバ）完了 (`e855d4a`)** — Go の `net/smtp` で配送できる
+- 残り: **SMTP 送信クライアント**、**PGP 暗号化本体**（rpgp 統合）
 
 **完了条件**:
 1. **M1 のゴールデン**（Go 版が実際に出力した `ParseMIMEEmail` / `BuildRFC5322` の結果）に
