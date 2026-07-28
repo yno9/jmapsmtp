@@ -610,6 +610,26 @@ Go 側ヘルパは `recover()` で panic を観測可能にしてあるが、
 
 ---
 
+### 11.12 `config.example.json` を実際に起動する内容にした
+
+Go リポジトリの `config.example.json` は**コピーしても起動しない**。2 点:
+
+1. `anchor_url` が設定済みで `anchor_token` が空。
+   `checkAnchorConfig()` が `log.Fatalf` する組み合わせそのもの。
+   **初回起動が、操作した覚えのないフィールドの話をして死ぬ**
+2. `account` のキーが**フルアドレス**（`you@example.com`）。
+   キーは localpart で、`Accounts()` は `localpart + "@" + domain` を作るので
+   `you@example.com@example.com` になる
+
+Rust 側は `anchor_url` を空にし、キーを localpart にした。
+
+**設定パーサの挙動は変えていない** — 変えたのは同梱のサンプルだけ。
+`the_shipped_example_config_loads_and_validates` が、このファイルが
+実際にパースと検証を通ることを固定する。サンプルは互換性の対象ではなく
+ドキュメントなので、Go 版と一致させる理由が無い。
+
+---
+
 ### 11.9 差分ハーネスでの扱い
 
 観測可能な差異は、シナリオのステップに宣言する:

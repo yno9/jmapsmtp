@@ -46,6 +46,8 @@ impl From<io::Error> for PgpError {
 ///
 /// Both forms occur: an account's own `pubkey.pgp` is armoured, while an
 /// Autocrypt peer key is stored as the raw packets the header carried.
+use crate::write_private;
+
 pub fn parse_public_key(data: &[u8]) -> Result<SignedPublicKey, PgpError> {
     let looks_armoured = data.starts_with(b"-----BEGIN PGP");
     let parsed = if looks_armoured {
@@ -165,18 +167,6 @@ pub fn store_peer_key(
 pub fn load_peer_key(data_dir: &Path, domain: &str, addr: &str) -> Option<SignedPublicKey> {
     let data = std::fs::read(peer_key_path(data_dir, domain, addr)).ok()?;
     parse_public_key(&data).ok()
-}
-
-fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    use std::io::Write as _;
-    let mut opts = std::fs::OpenOptions::new();
-    opts.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt as _;
-        opts.mode(0o600);
-    }
-    opts.open(path)?.write_all(bytes)
 }
 
 #[cfg(test)]
