@@ -7,6 +7,12 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+# A library alongside the binary so the integration tests can reach the
+# modules the binary is assembled from.
+[lib]
+name = "jmapsmtp"
+path = "src/lib.rs"
+
 [[bin]]
 name = "jmapsmtp"
 path = "src/main.rs"
@@ -43,6 +49,8 @@ rand.workspace = true
 mail-parser.workspace = true
 mail-builder.workspace = true
 mail-auth.workspace = true
+# Only for mail-auth's key-loading type.
+rustls-pki-types = "1"
 lettre.workspace = true
 pgp.workspace = true
 
