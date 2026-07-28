@@ -9,10 +9,12 @@
 
 pub mod dispatch;
 pub mod methods;
+pub mod mime;
 pub mod refs;
 pub mod server;
 pub mod store;
 
 pub use methods::{MethodError, MethodResult};
+pub use mime::{Attachment, build_envelope, extract_attachments, message_body, parse_mime_email};
 pub use server::{Account, AuthFn, Config, Handler, Hub, Server};
 pub use store::{ChangeRecord, Hooks, JsonObject, MailboxChangeRecord, Store};

@@ -32,8 +32,8 @@ impl Store {
             "Email/queryChanges" => methods::email::query_changes(self, account_id, args),
             "Email/set" => methods::email::set(self, account_id, args),
             "Email/copy" => methods::email::copy(self, account_id, args),
-            "Email/import" => methods::email::import(self, account_id, args),
-            "Email/parse" => methods::email::parse(self, account_id, args),
+            "Email/import" => methods::email::import(self, account_id, args, now),
+            "Email/parse" => methods::email::parse(self, account_id, args, now),
 
             "SearchSnippet/get" => methods::searchsnippet::get(self, account_id, args),
 

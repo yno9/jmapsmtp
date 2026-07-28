@@ -371,24 +371,108 @@ pub fn copy(store: &Store, account_id: &Id, args: &Value) -> MethodResult {
     }))
 }
 
-/// `Email/import` needs `ParseMIMEEmail`, which arrives in M5.
-pub fn import(store: &Store, account_id: &Id, args: &Value) -> MethodResult {
-    let _ = (store, args);
+#[derive(Default, Deserialize)]
+struct ImportArgs {
+    #[serde(default)]
+    emails: BTreeMap<Id, ImportSpec>,
+}
+
+#[derive(Default, Deserialize)]
+struct ImportSpec {
+    #[serde(default, rename = "blobId")]
+    blob_id: Id,
+    #[serde(default, rename = "mailboxIds")]
+    mailbox_ids: BTreeMap<Id, bool>,
+    #[serde(default)]
+    keywords: BTreeMap<String, bool>,
+    #[serde(default, rename = "receivedAt")]
+    received_at: String,
+}
+
+/// `now` supplies both the parser's fallback receive time and the suffix of
+/// the generated id; injected rather than read from the clock so a test can
+/// pin it.
+pub fn import(store: &Store, account_id: &Id, args: &Value, now: &str) -> MethodResult {
+    let req: ImportArgs = serde_json::from_value(args.clone()).unwrap_or_default();
+    let mut created = serde_json::Map::new();
+    let mut not_created = serde_json::Map::new();
+
+    for (key, spec) in req.emails {
+        let Some(data) = store.get_blob(spec.blob_id.as_str()) else {
+            not_created.insert(
+                key.0,
+                err_obj("notFound", &format!("blob {:?} not found", spec.blob_id.0)),
+            );
+            continue;
+        };
+        let Some(mut m) = crate::mime::parse_mime_email(&data, now) else {
+            not_created.insert(key.0, err_obj("invalidEmail", "could not parse message"));
+            continue;
+        };
+        m.id = Id(format!("import-{key}-{now}"));
+        if !spec.mailbox_ids.is_empty() {
+            m.mailbox_ids = spec.mailbox_ids;
+        }
+        if !spec.keywords.is_empty() {
+            m.keywords = spec.keywords;
+        }
+        // An unparseable receivedAt is ignored, leaving the Date-derived one.
+        if !spec.received_at.is_empty() {
+            let t = jmap_types::JmapTime::from_raw(spec.received_at);
+            if t.to_datetime().is_some() {
+                m.received_at = Some(t);
+            }
+        }
+        let id = m.id.clone();
+        match store.put(m) {
+            Ok(()) => {
+                created.insert(key.0, json!({"id": id}));
+            }
+            Err(e) => {
+                not_created.insert(key.0, err_obj("serverFail", &e.to_string()));
+            }
+        }
+    }
+
     Ok(json!({
         "accountId": account_id,
         "oldState": store.state(),
         "newState": store.state(),
-        "created": serde_json::Map::new(),
-        "notCreated": serde_json::Map::new(),
+        "created": created,
+        "notCreated": not_created,
     }))
 }
 
-/// `Email/parse` needs `ParseMIMEEmail`, which arrives in M5.
-pub fn parse(store: &Store, account_id: &Id, args: &Value) -> MethodResult {
-    let _ = (store, args);
+#[derive(Default, Deserialize)]
+struct ParseArgs {
+    #[serde(default, rename = "blobIds")]
+    blob_ids: Vec<Id>,
+}
+
+pub fn parse(store: &Store, account_id: &Id, args: &Value, now: &str) -> MethodResult {
+    let req: ParseArgs = serde_json::from_value(args.clone()).unwrap_or_default();
+    let mut parsed = serde_json::Map::new();
+    let mut not_parsable = serde_json::Map::new();
+
+    for blob_id in req.blob_ids {
+        let Some(data) = store.get_blob(blob_id.as_str()) else {
+            let msg = format!("blob {:?} not found", blob_id.0);
+            not_parsable.insert(blob_id.0, err_obj("notFound", &msg));
+            continue;
+        };
+        match crate::mime::parse_mime_email(&data, now) {
+            Some(m) => {
+                parsed.insert(blob_id.0, serde_json::to_value(m).unwrap_or(Value::Null));
+            }
+            None => {
+                not_parsable.insert(blob_id.0, err_obj("notParsable", "could not parse message"));
+            }
+        }
+    }
+
     Ok(json!({
         "accountId": account_id,
-        "parsed": serde_json::Map::new(),
-        "notParsable": serde_json::Map::new(),
+        "parsed": parsed,
+        "notParsable": not_parsable,
     }))
 }

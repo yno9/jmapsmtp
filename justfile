@@ -24,7 +24,7 @@ build-noanchor:
 # Runs the Go interop tests for real. Plain `cargo test` skips them when the
 # helper is absent (see crates/cryptenv/tests/interop.rs).
 test: interop
-    CRYPTENV_INTEROP=required STORE_INTEROP=required DISPATCH_INTEROP=required cargo test --workspace
+    CRYPTENV_INTEROP=required STORE_INTEROP=required DISPATCH_INTEROP=required MIME_INTEROP=required cargo test --workspace
 
 # Everything except the Go interop tests, for when the Go toolchain is absent.
 test-rust-only:
@@ -64,6 +64,9 @@ interop: oracle
     mkdir -p oracle/go-jmapsmtp/cmd/store-interop
     cp xtask/interop/store/main.go oracle/go-jmapsmtp/cmd/store-interop/main.go
     cd oracle/go-jmapsmtp && go build -o ../store-interop ./cmd/store-interop
+    mkdir -p oracle/go-jmapsmtp/cmd/mime-interop
+    cp xtask/interop/mime/main.go oracle/go-jmapsmtp/cmd/mime-interop/main.go
+    cd oracle/go-jmapsmtp && go build -o ../mime-interop ./cmd/mime-interop
     @echo "interop helpers built"
 
 # Confirm the oracle still builds, its tests pass, and go-jmapserver has not
