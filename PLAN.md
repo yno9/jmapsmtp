@@ -457,7 +457,8 @@ HTTP 層（axum ルータ・CORS・SSE）と全体 difftest は **M6 に繰り�
   **リモート DoS を発見**（SPEC §11.11）
 - **M5d（SMTP 受信サーバ）完了 (`e855d4a`)** — Go の `net/smtp` で配送できる
 - **M5e（SMTP 送信クライアント）完了 (`5544267`)** — 本物の go-smtp サーバが受理
-- 残り: **PGP 暗号化本体**（rpgp 統合）
+- **M5f（OpenPGP）完了 (`0205cf7`)** — 交差復号を両方向
+- **→ M5 完了。** 次は M6
 
 **完了条件**:
 1. **M1 のゴールデン**（Go 版が実際に出力した `ParseMIMEEmail` / `BuildRFC5322` の結果）に
