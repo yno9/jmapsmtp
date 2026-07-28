@@ -12,6 +12,12 @@ config.json
 *.pem
 *.key
 
+# ...except the differential harness's fixtures. These are throwaway keys,
+# generated once and committed on purpose: seeding both sides with the SAME
+# key is what makes DKIM signatures and TLS certs comparable at all. They are
+# never used outside `xtask difftest`.
+!xtask/fixtures/*.pem
+
 # the Go reference implementation (oracle) — built from ~/go-jmapsmtp +
 # ~/go-jmapserver by `just oracle`. Never committed: it is a build product of
 # two repositories that live outside this one. See PLAN.md §2.3.

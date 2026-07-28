@@ -5026,10 +5026,12 @@ name = "xtask"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "regex",
  "reqwest",
  "serde",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]

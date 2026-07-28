@@ -56,11 +56,26 @@ oracle-check: oracle
     @echo "--- go-jmapserver drift since {{oracle_rev}} ---"
     @cd {{go_jmapserver}} && git log --oneline {{oracle_rev}}..HEAD || true
 
-# Differential test: oracle vs this port (PLAN.md M1).
-difftest:
-    cargo run -p xtask -- difftest
+# ── differential testing (PLAN.md M1) ─────────────────────────────────────
 
-# Differential test with the oracle on BOTH sides — proves the normalisation
-# filters strip only non-determinism. Must pass before difftest means anything.
-difftest-selfcheck:
-    cargo run -p xtask -- difftest --both-oracle
+# Oracle vs this port. The acceptance criterion for M4 onwards.
+difftest *ARGS:
+    cargo run -p xtask -- difftest {{ARGS}}
+
+# Oracle vs oracle. Proves the normalisation filters strip only genuine
+# non-determinism; must pass before `difftest` means anything.
+difftest-oracle *ARGS:
+    cargo run -p xtask -- difftest --both-oracle {{ARGS}}
+
+# Oracle vs a deliberately mutated oracle. Proves the harness can FAIL — a
+# green difftest is worthless if a red one is unreachable.
+difftest-selftest:
+    cargo run -p xtask -- difftest --self-test
+
+# Print the normalisation filters: the complete list of what the two
+# implementations are allowed to disagree about.
+difftest-filters:
+    cargo run -p xtask -- difftest --show-filters
+
+# Everything that must hold before the harness is trusted.
+difftest-check: difftest-selftest difftest-oracle
