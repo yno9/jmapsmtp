@@ -53,6 +53,8 @@ mail-auth.workspace = true
 rustls-pki-types = "1"
 lettre.workspace = true
 pgp.workspace = true
+# rpgp's bounds are on rand 0.8's traits, not the workspace's rand 0.9.
+pgp_rand = { package = "rand", version = "0.8" }
 
 tokio-rustls.workspace = true
 rustls.workspace = true
