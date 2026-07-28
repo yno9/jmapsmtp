@@ -8,3 +8,4 @@
 pub mod autocrypt;
 pub mod dkim;
 pub mod smtp_in;
+pub mod smtp_out;

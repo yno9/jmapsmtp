@@ -6,6 +6,10 @@
 //! that this cannot answer shows up as a failed delivery, not as a subtle
 //! difference.
 //!
+//! The mirror direction matters too, and is checked the same way: a real
+//! go-smtp server, configured as the relay configures its own, receives what
+//! the Rust client sends.
+//!
 //! `SMTP_INTEROP=required` — set by `just test` — turns a missing helper into
 //! an error rather than a silent pass.
 
@@ -380,4 +384,188 @@ async fn a_second_message_on_the_same_connection_works() {
         assert!(resp.ok, "delivery failed: {}", resp.err);
     }
     assert_eq!(recorder.delivered.lock().unwrap().len(), 2);
+}
+
+// ── the mirror direction: Rust client → Go server ─────────────────────────
+
+#[derive(Debug, Deserialize)]
+struct Received {
+    #[serde(default)]
+    from: String,
+    #[serde(default)]
+    rcpts: Vec<String>,
+    #[serde(default)]
+    message: String,
+    #[serde(default)]
+    err: String,
+}
+
+/// An MX resolver with a fixed answer, so nothing here touches DNS.
+struct FixedMx(Vec<String>);
+
+impl jmapsmtp::smtp_out::MxResolver for FixedMx {
+    fn lookup_mx(&self, _domain: &str) -> Vec<String> {
+        self.0.clone()
+    }
+}
+
+/// Start the Go server on an ephemeral port and return the address it chose
+/// along with the running child.
+fn start_go_server(bin: &PathBuf) -> (String, std::process::Child) {
+    use std::io::{BufRead, BufReader as StdBufReader};
+    let mut child = Command::new(bin)
+        .args(["serve", "127.0.0.1:0"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawning the Go server");
+    // The chosen address is announced on stderr before it starts serving.
+    let stderr = child.stderr.take().expect("stderr");
+    let mut lines = StdBufReader::new(stderr).lines();
+    let line = lines
+        .next()
+        .expect("the Go server must announce its address")
+        .expect("reading the announcement");
+    let addr = line
+        .strip_prefix("listening ")
+        .expect("unexpected announcement")
+        .to_string();
+    (addr, child)
+}
+
+fn finish_go_server(child: std::process::Child) -> Received {
+    let out = child.wait_with_output().expect("waiting for the Go server");
+    serde_json::from_slice(&out.stdout).expect("parsing go server output")
+}
+
+fn sender() -> jmapsmtp::smtp_out::Sender {
+    jmapsmtp::smtp_out::Sender {
+        hostname: "mail.example.com".into(),
+        relay_host: None,
+    }
+}
+
+/// The Go server accepts what this port sends, byte for byte.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_go_server_receives_what_the_rust_client_sends() {
+    let Some(bin) = require_helper() else { return };
+    let (addr, child) = start_go_server(&bin);
+
+    let sender = sender();
+    sender
+        .send_one(
+            &addr,
+            "alice@example.com",
+            &["bob@example.org".to_string()],
+            MESSAGE.as_bytes(),
+        )
+        .await
+        .expect("the send must succeed");
+
+    let got = finish_go_server(child);
+    assert!(got.err.is_empty(), "server error: {}", got.err);
+    assert_eq!(got.from, "alice@example.com");
+    assert_eq!(got.rcpts, ["bob@example.org"]);
+    assert_eq!(got.message, MESSAGE);
+}
+
+/// A rejected recipient is logged and the send continues — the others still
+/// get the message. The Go server rejects anything at `reject@`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_rejected_recipient_does_not_abort_the_send() {
+    let Some(bin) = require_helper() else { return };
+    let (addr, child) = start_go_server(&bin);
+
+    sender()
+        .send_one(
+            &addr,
+            "alice@example.com",
+            &[
+                "reject@example.org".to_string(),
+                "bob@example.org".to_string(),
+            ],
+            MESSAGE.as_bytes(),
+        )
+        .await
+        .expect("one rejected recipient must not fail the send");
+
+    let got = finish_go_server(child);
+    assert_eq!(
+        got.rcpts,
+        ["bob@example.org"],
+        "the accepted recipient still receives it"
+    );
+    assert_eq!(got.message, MESSAGE);
+}
+
+/// Dot-stuffing on the way out is undone by the receiver, so a body line
+/// beginning with a dot survives the round trip.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_dotted_body_line_survives() {
+    let Some(bin) = require_helper() else { return };
+    let (addr, child) = start_go_server(&bin);
+
+    let message = "From: a@x\r\nTo: b@y\r\n\r\n\
+                   .a dotted line\r\n\
+                   . \r\n\
+                   normal\r\n";
+    sender()
+        .send_one(&addr, "a@x", &["b@y".to_string()], message.as_bytes())
+        .await
+        .expect("send");
+
+    let got = finish_go_server(child);
+    assert_eq!(got.message, message, "the body must arrive unchanged");
+}
+
+/// MX routing: recipients are grouped by domain and the best MX is used.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mx_routing_reaches_the_resolved_host() {
+    let Some(bin) = require_helper() else { return };
+    let (addr, child) = start_go_server(&bin);
+
+    // The resolver answers with the real address, minus the :25 the sender
+    // appends — so the port is taken from the MX name itself here.
+    let (host, port) = addr.rsplit_once(':').expect("host:port");
+    let sender = jmapsmtp::smtp_out::Sender {
+        hostname: "mail.example.com".into(),
+        // Routing through relay_host is the same code path a fixed smarthost
+        // takes, and lets the test use a port other than 25.
+        relay_host: Some(format!("{host}:{port}")),
+    };
+    sender
+        .deliver(
+            &FixedMx(vec![]),
+            "alice@example.com",
+            &["bob@example.org".to_string()],
+            MESSAGE.as_bytes(),
+        )
+        .await
+        .expect("delivery through a relay host must succeed");
+
+    let got = finish_go_server(child);
+    assert_eq!(got.rcpts, ["bob@example.org"]);
+}
+
+/// A round trip through both implementations at once: the Rust client sends
+/// to the Rust server. Catches anything the two agree on but Go would not —
+/// nothing here should pass that the Go tests above do not also cover.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_rust_client_and_server_agree_with_each_other() {
+    let (addr, recorder) = start_server(&["bob@example.com"]).await;
+
+    sender()
+        .send_one(
+            &addr,
+            "alice@example.com",
+            &["bob@example.com".to_string()],
+            MESSAGE.as_bytes(),
+        )
+        .await
+        .expect("send");
+
+    let delivered = recorder.delivered.lock().unwrap().clone();
+    assert_eq!(delivered.len(), 1);
+    assert_eq!(delivered[0].from, "alice@example.com");
+    assert_eq!(delivered[0].raw, MESSAGE);
 }
