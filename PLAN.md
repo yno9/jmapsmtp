@@ -450,6 +450,10 @@ HTTP 層（axum ルータ・CORS・SSE）と全体 difftest は **M6 に繰り�
 - `dkim.rs`: 鍵生成・永続化・署名・`dkim-dns.txt` 出力
 - `autocrypt.rs`: ヘッダ注入/解析、peer 鍵保存、`pgpEncryptInline`, `pgpMIMEWrapInline`
 
+**進捗**: **M5a（MIME）完了 (`0de4327`)** — 17 件の corpus で Go と一致。
+**M5b（DKIM）完了 (`03592bf`)** — Go の検証器が Rust の署名を受理。
+残り **M5c: SMTP 受信/送信 + Autocrypt/PGP**。
+
 **完了条件**:
 1. **M1 のゴールデン**（Go 版が実際に出力した `ParseMIMEEmail` / `BuildRFC5322` の結果）に
    Rust の出力が一致。実在の `.eml` を最低 20 件（添付あり / multipart / 日本語 /
