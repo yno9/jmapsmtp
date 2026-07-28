@@ -5,4 +5,5 @@
 //! The binary is a thin `main` over this library, so the integration tests can
 //! drive the same modules the relay runs.
 
+pub mod autocrypt;
 pub mod dkim;

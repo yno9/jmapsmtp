@@ -578,6 +578,36 @@ Rust は安定ソート + `BTreeMap`（ID 順）なので決定的。
 - `bh=` / `d=` / `s=` / `a=` / `c=` / `v=` は完全一致
 - `b=` は `t=` を含むため必然的に異なる（RSA PKCS#1 v1.5 自体は決定的）
 
+### 11.11 【重大】`pgpMIMEWrapInline` のリモート DoS
+
+- **Go**: 本文中に `-----END PGP MESSAGE-----` が
+  `-----BEGIN PGP MESSAGE-----` より**前**にあると **panic する**
+- **Rust**: END マーカーを **BEGIN 以降から**探す。
+  完全なブロックが無ければ `None` を返し、ラップせずそのまま送る
+- **影響**: **リレープロセス全体が停止する**
+
+原因:
+
+```go
+start := bytes.Index(body, startMarker)   // 全体から独立に検索
+end   := bytes.Index(body, endMarker)     // 同上
+if start < 0 || end < 0 { ... }           // 「両方見つかった」しか見ていない
+pgpBlock := body[start : end+len(endMarker)]   // start > end で slice が逆走 → panic
+```
+
+到達経路:
+
+1. `sendEmail` は raw に BEGIN が含まれれば `pgpMIMEWrapInline` を呼ぶ
+2. `sendEmail` は `OnSubmitEmail` の中の **`go func()`** から呼ばれる
+3. **回復されない goroutine の panic は Go プロセス全体を終了させる**
+
+本文は認証済み送信者が自由に決められる値なので、
+**1 通のメールでリレー上の全アカウントを止められる**。
+
+`autocrypt_interop` で**宣言済み差異**として固定している。
+Go 側ヘルパは `recover()` で panic を観測可能にしてあるが、
+**本物のリレーにその防御は無い**。
+
 ---
 
 ### 11.9 差分ハーネスでの扱い
