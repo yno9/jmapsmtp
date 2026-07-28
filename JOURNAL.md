@@ -10,6 +10,88 @@
 
 ---
 
+## 2026-07-28 — M4（メソッド層）完了 (`28967f2`)
+
+### 成果物
+
+- `methods/` — RFC 8621 の 26 メソッド全部
+- `dispatch.rs` / `refs.rs`（result reference）/ `server.rs`（Session・batch・auth・encode）
+- `dispatch_interop` — **Go の `Store.Dispatch` と 47 呼び出しを突き合わせるテスト**
+
+テスト 105 件 green。
+
+### スコープを 1 つ落とした（正直に記録）
+
+PLAN の M4 完了条件は「`just difftest` が oracle 対 Rust で green」だった。
+これには **jmapsmtp バイナリ全体**（config・handler・auth・全ルート）が要る。
+つまり実質 M4+M6 で、M4 単独では達成できない。
+
+代わりに **dispatch レベルの相互運用テスト**を作った。Go と Rust が同じ store を
+seed し、同じメソッド呼び出しスクリプトを**それぞれの Dispatch に通して**、
+返る JSON を比較する。HTTP 層（ルーティング・CORS・SSE）は未検証で、
+バイナリができる M6 に回す。**PLAN の完了条件も実態に合わせて書き換えた。**
+
+axum のルータも今回は書いていない。アプリ層が無いと 1 行も実行できないため。
+
+### 見つけた Go の実バグ: `Mailbox/set` が create 同時の update を捨てる
+
+`mbByID` がスライスの backing array への**ポインタ**を持ち、create ループの
+`append` で再確保が起きる。update ループは**捨てられた配列**に名前を書き、
+最後の再構築は新しい配列を読む。Go 版で実測:
+
+```
+update のみ                → mbx-inbox=Renamed   （正常）
+create + update 同時       → mbx-inbox=Inbox     （消失）
+作成直後のものを update    → mbx-inbox=Inbox     （消失）
+```
+
+**どちらの消失ケースもレスポンスは `updated` に入れて成功を報告する。**
+「1 つ作りつつ 1 つ改名」は正当な JMAP で一括整理では自然に出るので、
+サイレントなデータ損失。移植しない（SPEC §11.7）。
+
+### 宣言済み差異の機構
+
+`dispatch_interop` のスクリプト各行に `divergence: Option<&str>` を持たせた。
+宣言された差異は**一致と同じ厳密さで検査**する — **差が出なくなったら失敗**。
+
+意図はこれ: 修正がリファクタで失われたとき、黙って Go のバグ挙動に戻るほうが、
+元のバグより悪い。SPEC §11.9 に書いた機構を先に dispatch 層で実装した形。
+
+### 順序の非決定性がさらに 2 つ出た
+
+1. **`*/changes` の集合フィールド**（created/updated/destroyed/removed）は
+   Go がマップを range して作るので**Go 対 Go でも順序が違う**。
+   `queryChanges` は `index` までその反復順で振っている
+2. **`Store::all` の同値タイ**: `sort.Slice` は**不安定ソート**で、
+   入力もマップ順。`Email/copy` は `receivedAt` を引き継ぐので必ずタイになる
+
+1 は比較時にソートして正規化。2 は**スクリプトの並べ替え**で対処した
+（`Email/copy` を最後に置き、以降クエリしない）。正規化で潰すと
+「順序が本当に壊れた」場合まで隠れるので、観測させないほうを選んだ。
+
+### 詰まった点
+
+- `Handler::authenticate` をトレイトのデフォルトメソッドにしたら、
+  Go の「AuthFunc が**在るかどうか**で分岐が変わる」を表現できなかった
+  （Rust ではトレイトメソッドが override されたか問い合わせられない）。
+  Go の `Config.AuthFunc` と同じく**値**（`Option<AuthFn>`）に戻した
+- ヒアドキュメントの `cd` が失敗して別ディレクトリに書きかけた。以降は絶対パス
+
+### 気づいた点
+
+- `identityState` は Go でも**永続化されていない**（`persistedState` に無い）。
+  identities は残るのに state は再起動で 0 に戻る。そのまま移植
+- `Email/copy` / `Email/import` / `EmailSubmission/set` は `oldState` も
+  `newState` も**書き込み後**に読むので常に同値。実害が小さいので記録のみ（§11.8）
+- `Email/import` と `Email/parse` は `ParseMIMEEmail` 待ちで空スタブ
+
+### 次
+
+**M5: MIME + SMTP。** 最大フェーズ。`email.go` の残り半分（892 行中の MIME 部）と、
+自前 ESMTP サーバ、DKIM、Autocrypt/PGP。
+
+---
+
 ## 2026-07-28 — M3 完了 (`39ecc7f`)
 
 ### 成果物

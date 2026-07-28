@@ -429,15 +429,22 @@ Go 版の `FromBytes` が無検証で、`POST /auth/signup` に `{}` を送る�
 - back-reference 解決 (`resolveRefs` / `jsonPath`)
 - `Hub` (通知の pub/sub, `SetPersistDir`)
 
-**完了条件**: **差分ハーネス (M1) を Go 版 対 Rust 版で走らせて green**。
-Session 取得 → `Mailbox/get` → `Email/query` → `Email/get` → `Email/set` →
-`EmailSubmission/set` の全レスポンスがバイト一致（正規化後）。
-`route_registration_test.go` 相当（全ルート同時登録でパニックしない）を移植。
+**完了条件（改訂）**: 当初は「差分ハーネスを oracle 対 Rust で green」としていたが、
+これには jmapsmtp バイナリ全体が必要で、実質 M4+M6 だった。M4 単独の基準は:
+
+1. **dispatch 相互運用テスト**が green — Go と Rust が同じ store を seed し、
+   同じメソッド呼び出し列をそれぞれの `Dispatch` に通して結果 JSON を比較
+2. 変異テストで検出力を確認
+
+**【実績】完了 (`28967f2`)。** 47 呼び出し一致、宣言済み差異 1 件（§11.7）。
+HTTP 層（axum ルータ・CORS・SSE）と全体 difftest は **M6 に繰り延べ**。
+`route_registration_test.go` 相当も M6。
 
 ### M5: MIME + SMTP
 
-- `email.rs` (892 行): `ParseMIMEEmail` / `BuildRFC5322` / `ExtractAttachments` /
-  `MessageBody` / `BuildEnvelope` / HTML→テキスト変換
+- `email.rs` (892 行のうち MIME 部): `ParseMIMEEmail` / `BuildRFC5322` /
+  `ExtractAttachments` / `MessageBody` / `BuildEnvelope` / HTML→テキスト変換
+  （ハンドラ部は M4 で完了。`Email/import` と `Email/parse` のスタブをここで埋める）
 - `smtp_in.rs`: 受信サーバ (自前 ESMTP + STARTTLS + 証明書リロード + 自己署名生成)
 - `smtp_out.rs`: MX 引き / relay_host / STARTTLS 日和見
 - `dkim.rs`: 鍵生成・永続化・署名・`dkim-dns.txt` 出力
