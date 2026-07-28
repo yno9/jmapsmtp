@@ -10,6 +10,111 @@
 
 ---
 
+## 2026-07-28 — M2 完了 (`658e841`)
+
+### 方針変更: Go 版のバグは移植しない
+
+ユーザ指示。**Go 版が常に正しいわけではない**ので、明らかにおかしい箇所は直す。
+ただし差異は `SPEC.md §11` に必ず記録する — 記録のない差異は移植ミスと区別がつかない。
+
+§11 を「唯一の例外」から「意図的な差異の一覧」に格上げし、
+各項目に **Go の挙動 / 変更後 / 理由** を書く形式に変えた。
+
+### 最初に呼び出し側を読んだら、モジュールの性格が変わった
+
+`cryptenv.` の全使用箇所を grep したところ、**サーバは
+`Unseal` / `Rewrap` / `VerifyAuth` / `NewEnvelope` を一度も呼んでいない**。
+使うのは `FromBytes` と `Bytes()` だけ。パスワードはサーバに届かないので、
+サーバ側では原理的に復号できない。
+
+つまりエンベロープはサーバにとって**完全に不透明**で、
+`FromBytes` だけが唯一「実際に動く」関数。ここが甘いと直接被害が出る。
+
+### 見つけたバグ: 空の JSON でアカウントを永久に潰せる
+
+`FromBytes` は `json.Unmarshal` するだけで**何も検証しない**。Go 版で実験:
+
+```
+{}                → err=<nil>  env=&{Version:0 Salt:[] KDF:{0 0 0} ...}
+null              → err=<nil>  env=&{Version:0 ...}
+{"v":1}           → err=<nil>  env=&{Version:1 ...}
+```
+
+これで何が起きるか:
+
+1. `POST /auth/signup?token=X` に `{}` を送る
+2. **一度きりの setup token が消費され削除される**
+3. ゼロ値エンベロープが `envelope.json` に書かれ、204 が返る
+4. 以降 signup は「already initialized」で 409
+5. どんなパスワードでも復号できない → **アカウントが永久に使用不能**
+
+**未認証**で実行できる。setup token は 16 バイトなので総当たりは非現実的だが、
+トークンは起動時にログへ平文で出るし、正規ユーザが壊れた JSON を送るだけでも同じ結果。
+
+→ `from_bytes` で**復号が原理的に不可能な値だけ**を拒否するようにした（§11.2）。
+`t=1, m=8, p=1` や 8 バイト salt は通す。**検証はポリシーの押し付けではなく、
+不可能値の排除に限る**という線引きをテストにも書いた
+(`accepts_unusual_but_workable_parameters`)。
+
+副次的に: `kdf.t=0` / `p=0` は **Go の argon2 が panic する**値。
+サーバは Unseal しないので現状は踏まないが、潜在的な地雷ではある。
+
+### もう 1 つ: `Rewrap` だけバージョン検査が無い
+
+`Unseal` は `e.Version != currentVersion` を見るが `Rewrap` は見ない。
+将来の v2 エンベロープが v1 の解釈で黙って rewrap される。
+非対称にする理由が見当たらないので両方で検査（§11.3）。
+サーバは Rewrap を呼ばないので HTTP レベルの差異なし。
+
+### 相互運用テスト
+
+`xtask/interop/cryptenv/main.go` を `just interop` で **oracle チェックアウト内に
+コピーしてビルド**する。これで Go 版の**本物の** cryptenv パッケージにリンクされる
+（再実装ではない）。Rust 側がサブプロセスとして駆動。
+
+検証した方向:
+
+| テスト | 意味 |
+|---|---|
+| `rust_opens_a_go_sealed_envelope` | **移行方向**。既存デプロイの `envelope.json` は全部 Go 製 |
+| `go_opens_a_rust_sealed_envelope` | **切り戻し方向**。Rust 稼働中に作られたアカウントが失われないか |
+| `go_rejects_the_wrong_password_...` | 誤パスワードが両側で失敗するか |
+| `go_opens_a_rust_rewrapped_...` | rewrap 後も派生鍵が不変か |
+| `interoperates_at_the_real_cost_parameters` | **p=4 は p=1 と別コードパス**。実パラメータで 1 回だけ確認 |
+
+### 変異テストで検出力を確認（M1 の規律を継続）
+
+`HKDF_INFO_AUTH` を `v1` → `v2` に改変して実行:
+
+- 単体テスト 2 件 FAILED（`hkdf_info_strings_are_frozen`, `hkdf_derivation_...`）
+- 相互運用テスト **3/5 FAILED**（`auth_token differs`）
+
+**そしてこれが穴を 1 つ露出させた。** ヘルパのバイナリを消して実行すると
+**「5 passed」と表示される**（0.00s で）。何も実行していないのに green。
+M1 で潰したはずの「落ちないテスト」がここに再発していた。
+
+→ `CRYPTENV_INTEROP=required` を導入。`just test` が設定するので、
+**通常のワークフローではヘルパ欠落が明示的なエラーになる**。
+素の `cargo test` は Go 未インストール環境のために skip のまま。
+
+### 気づいた点
+
+- `hkdf_derivation_matches_the_go_implementation` の期待値は
+  **Go 側で実際に計算させた**もの（`master_secret = 0x42 × 32`）。
+  自前実装の出力を貼ると自己満足のテストになる
+- `go_opens_a_rust_rewrapped_envelope_with_unchanged_keys` は
+  Go の gen → Rust rewrap → Go unseal なので、**Rust の派生ロジックは比較していない**
+  （rewrap が master_secret を保存したかだけを見る）。派生は他のテストがカバー
+- `Unsealed` に `Debug` を自前実装して `<redacted>` にした。
+  panic メッセージに鍵が載るのを防ぐ
+
+### 次
+
+**M3: `jmap-types` + `Store`。** 699 行 + 型定義で、ここから規模が大きくなる。
+`data/` の双方向互換が受け入れ基準。
+
+---
+
 ## 2026-07-28 — M1 完了 (`0b11dea`)
 
 ### 成果物
