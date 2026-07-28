@@ -416,6 +416,11 @@ Go 版の `FromBytes` が無検証で、`POST /auth/signup` に `{}` を送る�
 2. **Rust が書いた `data/` を Go 版バイナリが起動時に読めて、同じ JMAP レスポンスを返す**
 3. `mimeparse_test.go` / `storage_test.go` / `contacts_test.go` を移植して green
 
+**【実績】完了 (`39ecc7f`)。** 1 と 2 は達成（相互運用テスト 4 件）。
+3 は該当コード（MIME / storage / contacts）が M5・M7 なのでそちらへ繰り延べ。
+**Go の `encoding/json` が `<` `>` `&` を HTML エスケープする**ことを相互運用テストが
+発見し、`jmap_types::go_json` で対応（SPEC.md §4）。
+
 ### M4: JMAP HTTP サーバ
 
 - `server.rs`: JMAP Session (`/.well-known/jmap`), `/jmap/api`, SSE, blob upload/download,
