@@ -10,6 +10,78 @@
 
 ---
 
+## 2026-07-29 — アイデンティティは DID である（`8f92815`）
+
+biset 本体を読んだ（https://github.com/yno9/biset @ `6030a0b` → `~/biset/`）。
+**リレー側のコードから推測せず、クライアントの `src/did/` を読んだ。**
+
+### 判明したこと（SPEC §10-A にした）
+
+**このリレーにとってユーザの同一性はアドレスではなく DID。**
+アドレスはその DID が claim しているルーティングラベルにすぎない。
+
+```
+DID（ルート鍵）
+  └─ devkey:<did>:<devicePubKey>:<label>:<ts>   ← ルート鍵が署名
+       └─ device key
+            └─ session:<did>:<devicePubKey>:<ts>  ← デバイス鍵が署名
+                 └─ session token
+```
+
+署名対象文字列は biset `src/did/devicebind.ts` の
+`vouchStatement` / `sessionLoginStatement` と**バイト一致していた**（確認済み）。
+
+### DID はディスクに保存しない（意図的）
+
+`POST /account/provision` は DID を**必須**にする（無ければ 400）のに、
+**リレーはどこにも DID を保存しない。**
+
+> keeping a second copy is what let this one drift out of step with the
+> registry — `provision.go`
+
+**移植で「便利だから」DID ファイルを足してはいけない。** 一度やって壊れている。
+
+### did:dht と did:webvh は非対称 — SCID は鍵ではない
+
+| | 識別子の中身 | ローカル検証 |
+|---|---|---|
+| `did:dht:<zbase32(pubkey)>` | **ルート公開鍵そのもの** | できる |
+| `did:webvh:<SCID>:<domain>:<path…>` | **genesis log entry のハッシュ** | **できない** |
+
+SCID = `base58btc(multihash(JCS(genesis log entry), sha256))`
+（biset `src/did/webvh/scid.ts`、base58btc 46 文字）。
+**自己証明しているのは DID document log であって署名鍵ではない。**
+現在の鍵は解決済み log の中にしか無い。
+
+だから anchorless リレーは **did:webvh アカウントを作れない**。
+
+### 敵対的テストを書いた
+
+**SCID を鍵として扱うと、誰でも任意の webvh アイデンティティに対して
+デバイス vouch を偽造できる。**
+
+そこで「webvh の形をしていて、SCID スロットに**本物の zbase32 鍵**が入っていて、
+**正しい署名まで付いている**」ケースを拒否することを固定した。
+同じ鍵を `did:dht:` にすると通る — つまり拒否の理由が
+**接頭辞チェックだけであること**まで確認している。
+
+> SCID が 46 文字で 32 バイトにデコードできないのは**偶然であって防壁ではない。**
+
+### ついでに、既存テストの実質的な穴を潰した
+
+`did_dht_vouches_are_judged_identically` は
+**署名を 1 回作って全行で再利用**していた。
+つまり拒否ケースは「DID が拒否されたから」ではなく
+**「署名が合わなかったから」**通っていた。
+
+`did_dht_root_key` に `did:webvh:` を受け入れさせる変異を入れても**緑のまま**だった。
+行ごとに署名し直すよう直したら、その変異で落ちるようになった。
+
+**M6e の `out.sort()` と同じ種類の穴** — 2 件目。
+「赤にできないテストは無価値」を、既存テストにも遡って当てる必要がある。
+
+---
+
 ## 2026-07-29 — M6e（handler の識別子とアカウント配送表）完了 (`cc22df7`)
 
 ### 成果物

@@ -4,6 +4,8 @@
 
 - 移植元: https://github.com/yno9/go-jmapsmtp @ `1b5cf06`
 - 依存ライブラリ: `~/go-jmapserver/` @ `39a4d0e`（取り込み対象）
+- クライアント: https://github.com/yno9/biset @ `6030a0b`（`~/biset/`）——
+  **移植対象ではない**が、署名対象文字列と DID/SCID モデルの出典。SPEC §10-A
 - 作業ディレクトリ: `/home/ubuntu/jmapsmtp/`
 - 作成日: 2026-07-27（`~/go-jmapserver/` 入手により §2 / §5 / §7 / §8 を改訂）
 

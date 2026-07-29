@@ -17,6 +17,7 @@ Rust 版が Go 版と一致していなければならない事項のうち、
 | `go-jmapsmtp` | `1b5cf06` |
 | `go-jmapserver` | `39a4d0e` |
 | `git.sr.ht/~rockorager/go-jmap` | `v0.5.3` |
+| `biset`（クライアント。署名対象文字列と DID モデルの出典） | `6030a0b` |
 
 `just oracle-check` が go-jmapserver の drift を報告する。
 **基準を動かすのは意図的な操作に限る**（PLAN.md §8-A'）。動かしたらこの表を更新し、
