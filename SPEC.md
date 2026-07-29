@@ -411,6 +411,69 @@ vouch 署名そのものが証明であり、これが完全なコールドリ�
 
 ---
 
+## 10-A. アイデンティティは DID（インボックスを支えているもの）
+
+**このリレーにとってユーザの同一性はアドレスではなく DID である。**
+アドレスはその DID が claim している**ルーティングラベル**にすぎない。
+credential の連鎖はこうなっている:
+
+```
+DID（ルート鍵）
+  └─ vouch: devkey:<did>:<devicePubKey>:<label>:<ts>   ← ルート鍵が署名
+       └─ device key（<acctDir>/devices/<pubkey>.json）
+            └─ session: session:<did>:<devicePubKey>:<ts>  ← デバイス鍵が署名
+                 └─ session token（<acctDir>/sessions/<hash>.json）
+```
+
+署名対象文字列は biset `src/did/devicebind.ts` の
+`vouchStatement` / `sessionLoginStatement` と**バイト一致**していなければならない。
+**3 実装（クライアント / リレー / anchor）が同じ 1 本の文字列に合意している。**
+
+### DID はディスクに保存しない（意図的）
+
+`POST /account/provision` は DID を**必須**にする（無ければ 400 `did required`）が、
+**リレーはどこにも DID を保存しない。**
+
+> No local DID index to maintain: which addresses trace back to a DID is
+> cross-relay information … keeping a second copy is what let this one drift
+> out of step with the registry.  — `provision.go`
+
+つまり「どのアドレスがどの DID に属するか」は anchor が claim から導出する。
+**移植で「便利だから」と DID ファイルを追加してはいけない。**
+そのドリフトが既に一度起きている。
+
+### did:dht と did:webvh は非対称
+
+| | 識別子の中身 | ローカル検証 |
+|---|---|---|
+| `did:dht:<zbase32(pubkey)>` | **ルート公開鍵そのもの**（32B） | **できる**（anchor 不要） |
+| `did:webvh:<SCID>:<domain>:<path…>` | **genesis log entry のハッシュ** | **できない** |
+
+did:webvh の SCID は
+`base58btc(multihash(JCS(genesis log entry), sha256))`（biset `src/did/webvh/scid.ts`、
+base58btc 46 文字）。**自己証明しているのは DID document log であって署名鍵ではない。**
+現在の鍵は解決済み log の中にしか無いので、**照合する相手がここに存在しない。**
+
+したがって:
+
+- anchorless リレーは **did:webvh アカウントを作れない**（作らせてはいけない）
+- `verify_did_dht_vouch_local` は **`did:dht:` 接頭辞以外を必ず拒否する**
+
+**SCID を鍵として扱うと、誰でも任意の webvh アイデンティティに対して
+デバイス vouch を偽造できる。** `a_webvh_did_carrying_a_real_key_in_its_scid_slot_is_still_refused`
+が、SCID スロットに**本物の zbase32 鍵**を入れた上で正しい署名まで付けた場合を拒否することを固定している。
+
+> SCID が 46 文字で 32 バイトにデコードできないのは**偶然であって防壁ではない**。
+> 防壁は接頭辞チェックのほうであり、テストはそちらを検証している。
+
+### DID は不透明に扱う
+
+did:webvh はポート番号と任意のパスセグメントを持てる（`did:webvh:<scid>:biset.md:dids:alice`）。
+`:` で分割して解釈し直す実装は壊れる。
+**署名対象文字列は DID を verbatim で埋め込む**ので、正規化も再エンコードもしてはいけない。
+
+---
+
 ## 11. 意図的な差異
 
 **Go 版が常に正しいわけではない。** 明らかなバグまで移植する必要はない。

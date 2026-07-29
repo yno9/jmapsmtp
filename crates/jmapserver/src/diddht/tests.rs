@@ -84,6 +84,93 @@ fn anything_that_is_not_a_did_dht_yields_nothing() {
     }
 }
 
+// ── did:webvh must never resolve locally ──────────────────────────────────
+
+/// biset's canonical shape, from `buildBisetWebvhDid`: the username lives in
+/// the path so every account on a relay shares one domain.
+const WEBVH: &str = "did:webvh:QmSCIDPlaceholder1111111111111111111111111111:biset.md:dids:alice";
+
+/// The reason `did:webvh` has no local shortcut, stated as a test.
+///
+/// A did:dht identifier **is** its root public key, z-base-32 encoded. A
+/// did:webvh SCID looks like it plays the same role — it is called
+/// self-certifying, and it is: `base58btc(multihash(JCS(genesis log entry),
+/// sha256))` (biset `src/did/webvh/scid.ts`). But it certifies the **DID
+/// document log**, not a signing key. The current key is only in the resolved
+/// log, so there is nothing here to verify a signature against, and the anchor
+/// is the only path.
+///
+/// Treating the first segment as a key would let anyone forge a device vouch
+/// for any webvh identity by choosing their own.
+#[test]
+fn a_did_webvh_never_yields_a_local_root_key() {
+    assert!(did_dht_root_key(WEBVH).is_none());
+    assert!(
+        did_dht_root_key(&WEBVH.replace("did:webvh:", "did:dht:")).is_none(),
+        "not even with the method swapped: an SCID is 46 base58 chars and \
+         cannot decode to a 32-byte key"
+    );
+}
+
+/// The adversarial version, which the length coincidence above does *not*
+/// cover: a webvh-shaped DID whose first segment is a genuine z-base-32
+/// encoding of an attacker's key, with a correctly signed vouch to match.
+///
+/// The method prefix is what refuses it. That is the barrier being tested —
+/// the SCID's 46-character length happening not to decode to 32 bytes is a
+/// coincidence, not a defence, and must not be the thing standing between an
+/// attacker and someone else's inbox.
+#[test]
+fn a_webvh_did_carrying_a_real_key_in_its_scid_slot_is_still_refused() {
+    let attacker = ed25519_dalek::SigningKey::from_bytes(&[7u8; 32]);
+    let fake_scid = zbase32_encode(&attacker.verifying_key().to_bytes());
+    let did = format!("did:webvh:{fake_scid}:biset.md:dids:alice");
+    let ts = 1_700_000_000;
+
+    // A signature that would verify, if anything looked at it.
+    use base64::Engine as _;
+    use ed25519_dalek::Signer as _;
+    let sig = base64::engine::general_purpose::STANDARD.encode(
+        attacker
+            .sign(vouch_statement(&did, "DEVICE", "Laptop", ts).as_bytes())
+            .to_bytes(),
+    );
+
+    assert!(
+        !verify_did_dht_vouch_local(&did, "DEVICE", "Laptop", ts, &sig, ts),
+        "a did:webvh vouch must reach the anchor or fail — never verify here"
+    );
+
+    // The same key and signature under did:dht *do* verify, which is what
+    // makes the refusal above about the method and nothing else.
+    let honest = format!("did:dht:{fake_scid}");
+    let sig = base64::engine::general_purpose::STANDARD.encode(
+        attacker
+            .sign(vouch_statement(&honest, "DEVICE", "Laptop", ts).as_bytes())
+            .to_bytes(),
+    );
+    assert!(verify_did_dht_vouch_local(
+        &honest, "DEVICE", "Laptop", ts, &sig, ts
+    ));
+}
+
+/// The DID is opaque to the relay. A webvh DID has an optional port and
+/// arbitrary path segments, so anything that splits on `:` and reinterprets
+/// gets it wrong — and the signed statements embed the DID verbatim, colons
+/// and all.
+#[test]
+fn the_signed_statement_embeds_a_webvh_did_verbatim() {
+    assert_eq!(
+        vouch_statement(WEBVH, "KEY", "Laptop", 1),
+        format!("devkey:{WEBVH}:KEY:Laptop:1"),
+        "no normalisation, no re-encoding — biset signs this exact string"
+    );
+    assert_eq!(
+        session_login_statement(WEBVH, "KEY", 1),
+        format!("session:{WEBVH}:KEY:1")
+    );
+}
+
 // ── statements ────────────────────────────────────────────────────────────
 
 /// Three implementations — this one, biset's client and the anchor — have to

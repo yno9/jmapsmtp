@@ -388,20 +388,61 @@ fn did_dht_vouches_are_judged_identically() {
     let (_, device_id) = device_keypair();
     let ts = now();
     let label = "Laptop";
-    let sig = sign(
-        &identity,
-        &diddht::vouch_statement(&did, &device_id, label, ts),
-    );
 
+    // Each row signs over the DID it is testing, not over a shared statement.
+    // A single signature reused across rows would make every refusal pass for
+    // the wrong reason — the signature simply would not match — and the test
+    // would stay green even if did:webvh started resolving locally. Verified
+    // by mutation: `did_dht_root_key` accepting `did:webvh:` fails these rows
+    // now, and did not before.
     for (name, did_used, expected) in [
         ("the identity's own signature", did.clone(), true),
-        ("a different identity", "did:dht:yyyy".into(), false),
+        ("a malformed did:dht", "did:dht:yyyy".into(), false),
+        // A well-formed did:dht that is somebody else's key, with a signature
+        // this identity really made. The statement matches; the key does not.
+        (
+            "another identity's did:dht",
+            format!(
+                "did:dht:{}",
+                diddht::zbase32_encode(
+                    &ed25519_dalek::SigningKey::from_bytes(&[11u8; 32])
+                        .verifying_key()
+                        .to_bytes()
+                )
+            ),
+            false,
+        ),
         (
             "not a did:dht at all",
             "did:webvh:example.com".into(),
             false,
         ),
+        // biset's canonical webvh shape. The SCID is
+        // base58btc(multihash(JCS(genesis log entry))) — it certifies the DID
+        // document log, not a signing key — so there is nothing here to verify
+        // against and the anchor is the only path.
+        (
+            "a realistic did:webvh",
+            "did:webvh:QmSCIDPlaceholder1111111111111111111111111111:biset.md:dids:alice".into(),
+            false,
+        ),
+        // The adversarial one: webvh-shaped, but with a genuine z-base-32
+        // encoding of a key in the SCID slot. Both implementations have to
+        // refuse on the method prefix, not on the SCID's length happening not
+        // to decode to 32 bytes.
+        (
+            "a did:webvh carrying a real key in its SCID slot",
+            format!(
+                "did:webvh:{}:biset.md:dids:alice",
+                diddht::zbase32_encode(&identity.verifying_key().to_bytes())
+            ),
+            false,
+        ),
     ] {
+        let sig = sign(
+            &identity,
+            &diddht::vouch_statement(&did_used, &device_id, label, ts),
+        );
         let results = go(
             &bin,
             dir.path(),
