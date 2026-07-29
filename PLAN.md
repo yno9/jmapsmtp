@@ -478,9 +478,15 @@ HTTP 層（axum ルータ・CORS・SSE）と全体 difftest は **M6 に繰り�
 - `customdomain.rs`: `/domain/verify-token`, `/domain/add`
 - `wkd.rs`: WKD + `/pgp/*`
 
-**進捗**: **M6a（認証プリミティブ）完了 (`1259cf2`)** —
-`authtoken` / `diddht` / `devicekeys` が両方向で相互運用。
-残り: config パース → 認証層 → axum ルータ → 起動シーケンス。
+**進捗**:
+
+| | 内容 | commit |
+|---|---|---|
+| M6a | 認証プリミティブ（`authtoken` / `diddht` / `devicekeys`） | `1259cf2` |
+| M6b | config パースと認証層（`config` / `auth_env`） | `0b2a9d6` |
+| M6c | 起動シーケンス（`startup`、孤児掃除は oracle と差分比較） | `263f307` |
+
+残り: **M6d** — handler と Store 構築、axum ルータ、全エンドポイント。
 
 **完了条件**:
 1. Go のテスト **45 本すべて**を Rust に移植して green。特に
