@@ -12,6 +12,7 @@ pub mod dkim;
 pub mod pgp;
 pub mod smtp_in;
 pub mod smtp_out;
+pub mod startup;
 
 /// Write a file only its owner can read.
 ///
