@@ -11,6 +11,7 @@ pub mod bearer;
 pub mod config;
 pub mod dkim;
 pub mod gomux;
+pub mod handler;
 pub mod pgp;
 pub mod routes;
 pub mod smtp_in;
