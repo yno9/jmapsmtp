@@ -22,6 +22,7 @@ default = ["anchor"]
 anchor = ["jmapserver/anchor", "dep:reqwest"]
 
 [dependencies]
+subtle.workspace = true
 cryptenv = { path = "../cryptenv" }
 jmap-types = { path = "../jmap-types" }
 jmapserver = { path = "../jmapserver", default-features = false }

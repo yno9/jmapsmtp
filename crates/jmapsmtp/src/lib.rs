@@ -7,9 +7,12 @@
 
 pub mod auth_env;
 pub mod autocrypt;
+pub mod bearer;
 pub mod config;
 pub mod dkim;
+pub mod gomux;
 pub mod pgp;
+pub mod routes;
 pub mod smtp_in;
 pub mod smtp_out;
 pub mod startup;

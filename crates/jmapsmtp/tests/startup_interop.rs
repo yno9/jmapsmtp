@@ -11,41 +11,23 @@
 //! behaviour under test *is* the binary's startup, and wrapping it would put a
 //! reimplementation between the test and the thing it checks.
 
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::path::Path;
 
 use jmapsmtp::config::{Config, DynamicDomains};
 use jmapsmtp::startup::cleanup_orphaned_data;
 
-/// The oracle, or a skip. `just test` sets `STARTUP_INTEROP=required` so a
-/// missing binary is a failure there rather than a quiet pass.
-fn oracle() -> Option<PathBuf> {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../oracle/jmapsmtp-oracle")
-        .canonicalize()
-        .ok()
-        .filter(|p| p.exists());
-    if path.is_none() {
-        assert!(
-            std::env::var("STARTUP_INTEROP").as_deref() != Ok("required"),
-            "STARTUP_INTEROP=required but oracle/jmapsmtp-oracle is missing — run `just oracle`"
-        );
-        eprintln!("skipping: oracle/jmapsmtp-oracle not built (run `just oracle`)");
-    }
-    path
+mod oracle_harness;
+use oracle_harness::Oracle;
+
+fn config_json(http_port: u16, smtp_port: u16) -> String {
+    format!(
+        r#"{{"listen_addr":"127.0.0.1:{http_port}","smtp_port":{smtp_port},
+            "base_url":"http://127.0.0.1","hostname":"test.invalid",
+            "domain":{{"a.test":{{"account":{{"configured":{{}}}}}}}}}}"#
+    )
 }
 
-/// A free TCP port. The oracle binds both an HTTP and an SMTP listener and
-/// `log.Fatal`s if either fails, so neither can be left to a default.
-fn free_port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
-}
-
-/// Seed one `data/` tree. Returns the temp dir holding `data/`.
+/// Seed one `data/` tree. Every entry is a case the sweep has to decide.
 fn seed(root: &Path) {
     let data = root.join("data");
 
@@ -80,14 +62,6 @@ fn mkfile(path: &Path, contents: &[u8]) {
     std::fs::write(path, contents).unwrap();
 }
 
-const CONFIG: &str = r#"{
-  "listen_addr": "127.0.0.1:%HTTP%",
-  "smtp_port": %SMTP%,
-  "base_url": "http://127.0.0.1",
-  "hostname": "test.invalid",
-  "domain": {"a.test": {"account": {"configured": {}}}}
-}"#;
-
 /// Every surviving directory under `data/`, relative and sorted.
 fn surviving_dirs(data: &Path) -> Vec<String> {
     fn walk(base: &Path, dir: &Path, out: &mut Vec<String>) {
@@ -113,68 +87,20 @@ fn surviving_dirs(data: &Path) -> Vec<String> {
     out
 }
 
-/// Run the oracle to the point where its startup sweep has happened, then stop
-/// it. Its HTTP listener opening is the signal: that is step 15, the last one.
-fn run_oracle_startup(oracle: &Path) -> tempfile::TempDir {
-    let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path();
-
-    // The oracle resolves its own directory from argv[0], not the working
-    // directory, and reads config.json from there. A symlink is enough:
-    // filepath.Abs does not resolve one.
-    std::os::unix::fs::symlink(oracle, root.join("jmapsmtp-oracle")).unwrap();
-
-    let http_port = free_port();
-    let config = CONFIG
-        .replace("%HTTP%", &http_port.to_string())
-        .replace("%SMTP%", &free_port().to_string());
-    std::fs::write(root.join("config.json"), &config).unwrap();
-    seed(root);
-
-    let mut child = Command::new(root.join("jmapsmtp-oracle"))
-        .current_dir("/")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .expect("the oracle should start");
-
-    // Wait for the HTTP listener, which is the last step of startup.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
-    let addr = format!("127.0.0.1:{http_port}");
-    let mut up = false;
-    while std::time::Instant::now() < deadline {
-        if std::net::TcpStream::connect(&addr).is_ok() {
-            up = true;
-            break;
-        }
-        if let Ok(Some(status)) = child.try_wait() {
-            let mut err = String::new();
-            use std::io::Read as _;
-            let _ = child.stderr.take().unwrap().read_to_string(&mut err);
-            panic!("the oracle exited during startup ({status}):\n{err}");
-        }
-        std::thread::sleep(std::time::Duration::from_millis(50));
-    }
-    let _ = child.kill();
-    let _ = child.wait();
-    assert!(up, "the oracle never opened {addr}");
-    tmp
-}
-
 #[test]
 fn the_orphan_sweep_keeps_exactly_what_the_oracle_keeps() {
-    let Some(oracle) = oracle() else { return };
-
-    let go_root = run_oracle_startup(&oracle);
-    let go_survivors = surviving_dirs(&go_root.path().join("data"));
+    // Starting the oracle runs its startup, and step 6 of that is the sweep.
+    let Some(o) = Oracle::start_with("STARTUP_INTEROP", config_json, seed) else {
+        return;
+    };
+    let go_survivors = surviving_dirs(&o.data_dir());
 
     // The same seed, swept by this port. `load` first: the ordering is the
     // contract (SPEC.md §2 steps 5 and 6), and the oracle runs it that way.
     let rust_root = tempfile::tempdir().unwrap();
     seed(rust_root.path());
     let data = rust_root.path().join("data");
-    let cfg: Config =
-        serde_json::from_str(&CONFIG.replace("%HTTP%", "1").replace("%SMTP%", "1")).unwrap();
+    let cfg: Config = serde_json::from_str(&config_json(1, 1)).unwrap();
     let dynamic_domains = DynamicDomains::default();
     dynamic_domains.load(&data);
     cleanup_orphaned_data(&cfg, &dynamic_domains, &data);
