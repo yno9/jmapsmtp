@@ -76,6 +76,20 @@ impl Oracle {
         config_json: fn(u16, u16) -> String,
         seed: impl FnOnce(&Path),
     ) -> Option<Oracle> {
+        Oracle::start_with_env(required_var, config_json, seed, &[])
+    }
+
+    /// As [`Oracle::start_with`], with extra environment variables.
+    ///
+    /// `BISET_PGP_KEY` is the relay-wide OpenPGP key, and it is read from the
+    /// environment rather than the config — so a test that needs the
+    /// global-key branch of WKD has to set it here.
+    pub fn start_with_env(
+        required_var: &str,
+        config_json: fn(u16, u16) -> String,
+        seed: impl FnOnce(&Path),
+        env: &[(&str, &str)],
+    ) -> Option<Oracle> {
         let oracle = oracle_binary(required_var)?;
         let root = tempfile::tempdir().unwrap();
 
@@ -99,6 +113,7 @@ impl Oracle {
             // what the tests observe.
             .env_remove("ADMIN_TOKEN")
             .env_remove("METRICS_TOKEN")
+            .envs(env.iter().copied())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::piped())
             .spawn()
@@ -143,6 +158,17 @@ impl Oracle {
     pub fn post_json_auth(&self, target: &str, body: &str, auth: &str) -> (u16, String) {
         let (status, body, _) = self.request("POST", target, Some(body), Some(auth));
         (status, body)
+    }
+
+    /// `PUT target` with a body and Basic credentials.
+    pub fn put_auth(&self, target: &str, body: &str, auth: &str) -> (u16, String) {
+        let (status, body, _) = self.request("PUT", target, Some(body), Some(auth));
+        (status, body)
+    }
+
+    /// `GET target` with Basic credentials.
+    pub fn get_auth(&self, target: &str, auth: &str) -> (u16, String, String) {
+        self.request("GET", target, None, Some(auth))
     }
 
     /// `GET target`, returning `(status, body, location)`.

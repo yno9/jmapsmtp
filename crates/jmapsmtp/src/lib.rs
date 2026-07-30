@@ -20,6 +20,7 @@ pub mod routes;
 pub mod smtp_in;
 pub mod smtp_out;
 pub mod startup;
+pub mod wkd;
 
 /// Write a file only its owner can read.
 ///
