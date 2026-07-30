@@ -493,10 +493,13 @@ HTTP 層（axum ルータ・CORS・SSE）と全体 difftest は **M6 に繰り�
 | M6f | provision（`provision`。oracle の実エンドポイントと差分比較） | `f240fa6` |
 | M6g | Store フック（`hooks`。oracle の JMAP API 経由で保存結果を比較） | `1a10da1` |
 
-残り: **M6h** — 残りのエンドポイント
-（`/setup` `/auth/*` `/account/session` `/account/devices` `/account/delete`
-`/pgp/*` `/.well-known/openpgpkey/*` `/domain/*` `/contacts`
-`/account/storage/*` `/metrics` `/admin/*` `/relay-info`）とハンドラ配線。
+| M6h | デバイス / セッションエンドポイント（`devices`） | `414cbc5` |
+
+残り: **M6i** — 残りのエンドポイント
+（`/setup` `/auth/*` `/account/delete` `/pgp/*` `/.well-known/openpgpkey/*`
+`/domain/*` `/contacts` `/account/storage/*` `/metrics` `/admin/*`
+`/relay-info`）と、**ハンドラ配線 + 実 HTTP サーバ**。
+最後が入ると `just difftest` が oracle 対 Rust で意味を持つ。
 
 なお §4 の「ルーティングは axum」は M6d で**取り下げた**。
 二重登録 panic・サブツリー一致・リダイレクトが観測可能な挙動なので、
