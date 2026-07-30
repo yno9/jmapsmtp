@@ -491,10 +491,12 @@ HTTP 層（axum ルータ・CORS・SSE）と全体 difftest は **M6 に繰り�
 | M6e | handler の識別子・容量計算・エイリアス表（`handler`） | `cc22df7` |
 | — | DID アイデンティティモデルの確定（SPEC §10-A） | `8f92815` |
 | M6f | provision（`provision`。oracle の実エンドポイントと差分比較） | `f240fa6` |
+| M6g | Store フック（`hooks`。oracle の JMAP API 経由で保存結果を比較） | `1a10da1` |
 
-残り: **M6g** — `OnCreateEmail` / `OnSubmitEmail` フック本体、
-残りのエンドポイント（`/setup` `/auth/*` `/account/session` `/account/devices`
-`/pgp/*` `/domain/*` `/contacts` `/account/storage/*` `/metrics` `/admin/*`）。
+残り: **M6h** — 残りのエンドポイント
+（`/setup` `/auth/*` `/account/session` `/account/devices` `/account/delete`
+`/pgp/*` `/.well-known/openpgpkey/*` `/domain/*` `/contacts`
+`/account/storage/*` `/metrics` `/admin/*` `/relay-info`）とハンドラ配線。
 
 なお §4 の「ルーティングは axum」は M6d で**取り下げた**。
 二重登録 panic・サブツリー一致・リダイレクトが観測可能な挙動なので、
