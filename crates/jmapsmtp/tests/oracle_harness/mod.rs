@@ -135,7 +135,13 @@ impl Oracle {
 
     /// `POST target` with a JSON body, returning `(status, body)`.
     pub fn post_json(&self, target: &str, body: &str) -> (u16, String) {
-        let (status, body, _) = self.request("POST", target, Some(body));
+        let (status, body, _) = self.request("POST", target, Some(body), None);
+        (status, body)
+    }
+
+    /// `POST target` with a JSON body and HTTP Basic credentials.
+    pub fn post_json_auth(&self, target: &str, body: &str, auth: &str) -> (u16, String) {
+        let (status, body, _) = self.request("POST", target, Some(body), Some(auth));
         (status, body)
     }
 
@@ -146,10 +152,16 @@ impl Oracle {
     /// every client normalises those before they reach the wire, which is
     /// exactly the behaviour being measured.
     pub fn get(&self, target: &str) -> (u16, String, String) {
-        self.request("GET", target, None)
+        self.request("GET", target, None, None)
     }
 
-    fn request(&self, method: &str, target: &str, body: Option<&str>) -> (u16, String, String) {
+    fn request(
+        &self,
+        method: &str,
+        target: &str,
+        body: Option<&str>,
+        basic_auth: Option<&str>,
+    ) -> (u16, String, String) {
         let mut s = TcpStream::connect(format!("127.0.0.1:{}", self.http_port)).unwrap();
         s.set_read_timeout(Some(std::time::Duration::from_secs(10)))
             .unwrap();
@@ -158,6 +170,9 @@ impl Oracle {
             "{method} {target} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n"
         )
         .unwrap();
+        if let Some(auth) = basic_auth {
+            write!(s, "Authorization: Basic {auth}\r\n").unwrap();
+        }
         match body {
             Some(b) => write!(
                 s,

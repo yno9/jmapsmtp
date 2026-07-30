@@ -12,6 +12,7 @@ pub mod config;
 pub mod dkim;
 pub mod gomux;
 pub mod handler;
+pub mod hooks;
 pub mod pgp;
 pub mod provision;
 pub mod routes;
