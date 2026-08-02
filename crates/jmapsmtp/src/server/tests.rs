@@ -235,6 +235,68 @@ async fn the_metrics_token_does_not_open_the_admin_routes() {
     assert_eq!(with("admin-secret", "/metrics").await, 401);
 }
 
+// ── /admin/accounts/<address> ─────────────────────────────────────────────
+
+/// The address is split on the **last** `@`, as Go's `LastIndex` does. The
+/// bearer guard closes this route in the interop suite, so nothing there
+/// reaches the parsing — it is tested here or nowhere.
+#[tokio::test]
+async fn the_admin_detail_address_splits_on_the_last_at() {
+    let state = state_with_tokens("admin-secret", "");
+    let acct = state.data_dir.join("a.test").join("odd@name");
+    std::fs::create_dir_all(&acct).unwrap();
+
+    let ask = |target: &str| {
+        let state = state.clone();
+        let req = Request::builder()
+            .uri(target.to_string())
+            .header(header::AUTHORIZATION, "Bearer admin-secret")
+            .body(Body::empty())
+            .unwrap();
+        async move {
+            let res = app(state).oneshot(req).await.unwrap();
+            let status = res.status().as_u16();
+            let bytes = axum::body::to_bytes(res.into_body(), 1 << 20)
+                .await
+                .unwrap();
+            (status, String::from_utf8_lossy(&bytes).into_owned())
+        }
+    };
+
+    // Splitting on the first `@` would look for a domain of `name@a.test`.
+    let (status, body) = ask("/admin/accounts/odd@name@a.test").await;
+    assert_eq!(status, 200, "{body}");
+    assert!(body.contains("\"localpart\":\"odd@name\""), "{body}");
+    assert!(body.contains("\"domain\":\"a.test\""), "{body}");
+}
+
+#[tokio::test]
+async fn the_admin_detail_refuses_an_address_that_is_not_one() {
+    let state = state_with_tokens("admin-secret", "");
+    let ask = |target: &str| {
+        let state = state.clone();
+        let req = Request::builder()
+            .uri(target.to_string())
+            .header(header::AUTHORIZATION, "Bearer admin-secret")
+            .body(Body::empty())
+            .unwrap();
+        async move { app(state).oneshot(req).await.unwrap().status().as_u16() }
+    };
+    for bad in [
+        "/admin/accounts/",
+        "/admin/accounts/noat",
+        "/admin/accounts/@a.test",
+        "/admin/accounts/alice@",
+    ] {
+        assert_eq!(ask(bad).await, 400, "{bad}");
+    }
+    assert_eq!(
+        ask("/admin/accounts/nobody@a.test").await,
+        404,
+        "a well-formed address with no account"
+    );
+}
+
 // ── query parsing ─────────────────────────────────────────────────────────
 
 #[test]

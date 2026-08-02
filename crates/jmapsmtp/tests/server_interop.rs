@@ -307,6 +307,64 @@ fn seed_accounts(root: &Path) {
     .unwrap();
 }
 
+/// The account, storage and admin routes wired in this pass — the refusals
+/// each answers without a credential, which is all that is reachable here.
+#[test]
+fn the_account_and_storage_routes_are_byte_identical() {
+    let Some((o, ours)) = both(seed_accounts) else {
+        return;
+    };
+    for target in [
+        "/account/session",
+        "/account/devices",
+        "/account/storage",
+        "/account/storage/messages",
+        "/account/storage/export",
+    ] {
+        compare(&o, &ours, target);
+    }
+    ours.stop();
+}
+
+/// The admin listing, compared figure by figure rather than byte for byte:
+/// the *set* of accounts differs on purpose (SPEC.md §11.16 — the oracle
+/// reports the domain registry as an account), so what is checked is that
+/// every real account's numbers agree.
+#[test]
+fn the_admin_listing_agrees_on_every_real_account() {
+    let Some((o, ours)) = both(seed_accounts) else {
+        return;
+    };
+    let (go_status, go_body, _) = o.get("/admin/accounts");
+    assert_eq!(go_status, 200, "{go_body:.200}");
+    let go: serde_json::Value = serde_json::from_str(&go_body).unwrap();
+
+    for account in jmapserver::admin::list_provisioned(&o.data_dir()) {
+        let go_row = go["accounts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["address"] == account.address())
+            .unwrap_or_else(|| panic!("the oracle should list {}", account.address()));
+        let (messages, bytes) =
+            jmapserver::admin::message_stats(&o.data_dir(), &account.domain, &account.localpart);
+        assert_eq!(
+            go_row["messages"].as_u64(),
+            Some(messages),
+            "{}",
+            account.address()
+        );
+        assert_eq!(
+            go_row["bytes"].as_u64(),
+            Some(bytes),
+            "{}",
+            account.address()
+        );
+    }
+    assert_eq!(go["version"], "dev", "the default version label");
+    ours.stop();
+}
+
 // ── what is not wired ─────────────────────────────────────────────────────
 
 /// The routes still to be wired answer 501 here and something else on the
@@ -326,12 +384,7 @@ fn the_unwired_routes_are_the_ones_named_here() {
         "/jmap/push/subscribe",
         "/jmap/push/unsubscribe",
         "/account/provision",
-        "/account/session",
-        "/account/devices",
         "/account/delete",
-        "/account/storage",
-        "/account/storage/messages",
-        "/account/storage/export",
         "/admin/dashboard",
     ];
 
@@ -348,6 +401,10 @@ fn the_unwired_routes_are_the_ones_named_here() {
             "{target}: the oracle serves it, so this is real work remaining"
         );
     }
+
+    // /account/storage/purge-messages needs the in-memory Store, which is
+    // step 11 of the startup sequence and not assembled yet.
+    assert_eq!(ours.get("/account/storage/purge-messages").0, 501);
 
     // The bearer routes are a different state: the **guard** is wired and the
     // body is not, so they answer 401 rather than 501 — and they answer 401

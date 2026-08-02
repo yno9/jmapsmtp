@@ -345,6 +345,13 @@ async fn dispatch(
         "/auth/signup" => handlers::auth_signup(&state, &req, &body),
         "/contacts" => handlers::contacts_list(&state, &req),
         "/contacts/" => handlers::contacts_put(&state, &req, &body),
+        "/account/session" => handlers::account_session(&state, &req, &body),
+        "/account/devices" => handlers::account_devices(&state, &req, &body),
+        "/account/storage" => handlers::storage_summary(&state, &req),
+        "/account/storage/messages" => handlers::storage_messages(&state, &req),
+        "/account/storage/export" => handlers::storage_export(&state, &req),
+        "/admin/accounts" => handlers::admin_accounts(&state, &req),
+        "/admin/accounts/" => handlers::admin_account_detail(&state, &req),
         _ => text_error(501, "not implemented"),
     }
 }
@@ -626,6 +633,269 @@ mod handlers {
                 }
             }
         }
+    }
+    // ── devices and sessions ──────────────────────────────────────────────
+
+    /// Login. **No Basic Auth**: a device signature over
+    /// `session:<did>:<devicePubKey>:<ts>` is the whole credential.
+    pub fn account_session(state: &RelayState, req: &Request<()>, body: &[u8]) -> Response<Body> {
+        let mut res = if req.method() != axum::http::Method::POST {
+            method_not_allowed()
+        } else {
+            match serde_json::from_slice::<crate::devices::SessionRequest>(body) {
+                Err(_) => text_error(400, "invalid JSON"),
+                Ok(login) => match crate::devices::login(&state.data_dir, &login, now_unix()) {
+                    Err(e) => text_error(e.status(), e.message()),
+                    Ok(session) => match jmap_types::go_json::to_vec(&session) {
+                        Ok(body) => json_response(200, body),
+                        Err(_) => text_error(500, "internal error"),
+                    },
+                },
+            }
+        };
+        set_route_cors(&mut res, "POST, OPTIONS", "Content-Type");
+        res
+    }
+
+    /// One pattern, three methods. **POST is not behind `authenticate`** — the
+    /// vouch signature is the proof, and that is what makes a cold recovery
+    /// (mnemonic only, fresh install, no session) possible at all. GET and
+    /// DELETE act on an account that already exists, so they do require a
+    /// credential.
+    pub fn account_devices(state: &RelayState, req: &Request<()>, body: &[u8]) -> Response<Body> {
+        let mut res = (|| {
+            if *req.method() == axum::http::Method::POST {
+                return vouch_device(state, body);
+            }
+            let Some((domain, localpart)) = authenticate(state, req) else {
+                return unauthorized();
+            };
+            let acct = crate::auth_env::account_dir(&state.data_dir, &domain, &localpart);
+            match *req.method() {
+                axum::http::Method::GET => {
+                    let keys = jmapserver::devicekeys::list_device_keys(&acct);
+                    match jmap_types::go_json::to_vec(&keys) {
+                        Ok(body) => json_response(200, body),
+                        Err(_) => text_error(500, "internal error"),
+                    }
+                }
+                axum::http::Method::DELETE => {
+                    let Some(id) = query_param(req, "id").filter(|i| !i.is_empty()) else {
+                        return text_error(400, crate::devices::DeviceError::IdRequired.message());
+                    };
+                    match jmapserver::devicekeys::remove_device_key(&acct, &id) {
+                        Ok(()) => no_content(),
+                        Err(_) => text_error(500, "internal error"),
+                    }
+                }
+                _ => method_not_allowed(),
+            }
+        })();
+        set_route_cors(
+            &mut res,
+            "GET, POST, DELETE, OPTIONS",
+            "Authorization, Content-Type",
+        );
+        res
+    }
+
+    fn vouch_device(state: &RelayState, body: &[u8]) -> Response<Body> {
+        let Ok(vouch) = serde_json::from_slice::<crate::devices::VouchRequest>(body) else {
+            return text_error(400, "invalid JSON");
+        };
+        let (localpart, domain) = match vouch.account() {
+            Ok(v) => v,
+            Err(e) => return text_error(e.status(), e.message()),
+        };
+        if !crate::devices::account_exists(&state.data_dir, &domain, &localpart) {
+            let e = crate::devices::DeviceError::NoSuchAccount;
+            return text_error(e.status(), e.message());
+        }
+        match crate::devices::check_vouch(&state.cfg, &vouch, now_unix()) {
+            Err(e) => text_error(e.status(), e.message()),
+            Ok(crate::provision::VouchPath::Anchor) => {
+                // The anchor client is a milestone of its own; refusing is the
+                // honest answer until it exists, and it is the same status the
+                // Go handler uses when the anchor cannot be reached.
+                let e = crate::devices::DeviceError::AnchorUnavailable;
+                text_error(e.status(), e.message())
+            }
+            Ok(_) => {
+                match crate::devices::write_device(
+                    &state.data_dir,
+                    &domain,
+                    &localpart,
+                    &vouch,
+                    now_unix(),
+                ) {
+                    Ok(()) => no_content(),
+                    Err(_) => text_error(500, "internal error"),
+                }
+            }
+        }
+    }
+
+    // ── storage ───────────────────────────────────────────────────────────
+
+    pub fn storage_summary(state: &RelayState, req: &Request<()>) -> Response<Body> {
+        storage_route(state, req, "GET, OPTIONS", |data, domain, localpart| {
+            let entries = jmapserver::storage::list_account_storage(data, domain, localpart)
+                .unwrap_or_default();
+            jmap_types::go_json::to_vec(&jmapserver::storage::storage_summary(entries)).ok()
+        })
+    }
+
+    pub fn storage_messages(state: &RelayState, req: &Request<()>) -> Response<Body> {
+        storage_route(state, req, "GET, OPTIONS", |data, domain, localpart| {
+            let files = jmapserver::storage::list_message_files(data, domain, localpart)
+                .unwrap_or_default();
+            jmap_types::go_json::to_vec(&std::collections::BTreeMap::from([("files", files)])).ok()
+        })
+    }
+
+    /// Every file exactly as it sits on disk, base64-encoded.
+    pub fn storage_export(state: &RelayState, req: &Request<()>) -> Response<Body> {
+        storage_route(state, req, "GET, OPTIONS", |data, domain, localpart| {
+            use base64::Engine as _;
+            let files: std::collections::BTreeMap<String, String> =
+                jmapserver::storage::export_account_storage(data, domain, localpart)
+                    .into_iter()
+                    .map(|(k, v)| (k, base64::engine::general_purpose::STANDARD.encode(v)))
+                    .collect();
+            let mut out = serde_json::Map::new();
+            out.insert(
+                "email".into(),
+                serde_json::Value::String(format!("{localpart}@{domain}")),
+            );
+            out.insert("files".into(), serde_json::to_value(files).ok()?);
+            jmap_types::go_json::to_vec(&serde_json::Value::Object(out)).ok()
+        })
+    }
+
+    fn storage_route(
+        state: &RelayState,
+        req: &Request<()>,
+        methods: &'static str,
+        render: impl Fn(&std::path::Path, &str, &str) -> Option<Vec<u8>>,
+    ) -> Response<Body> {
+        let mut res = if req.method() != axum::http::Method::GET {
+            method_not_allowed()
+        } else {
+            match authenticate(state, req) {
+                None => unauthorized(),
+                Some((domain, localpart)) => match render(&state.data_dir, &domain, &localpart) {
+                    Some(body) => json_response(200, body),
+                    None => text_error(500, "internal error"),
+                },
+            }
+        };
+        set_route_cors(&mut res, methods, "Authorization, Content-Type");
+        res
+    }
+
+    // ── admin ─────────────────────────────────────────────────────────────
+
+    pub fn admin_accounts(state: &RelayState, req: &Request<()>) -> Response<Body> {
+        if req.method() != axum::http::Method::GET {
+            return method_not_allowed();
+        }
+        let accounts: Vec<jmapserver::admin::AccountSummary> =
+            jmapserver::admin::list_provisioned(&state.data_dir)
+                .into_iter()
+                .map(|a| {
+                    let last = jmapserver::activity::read_activity(
+                        &state.data_dir,
+                        &a.domain,
+                        &a.localpart,
+                        1,
+                    )
+                    .ok()
+                    .and_then(|mut v| v.drain(..).next())
+                    .map(|e| e.time);
+                    jmapserver::admin::account_summary(
+                        &state.data_dir,
+                        &a.domain,
+                        &a.localpart,
+                        last,
+                    )
+                })
+                .collect();
+
+        let mut out = serde_json::Map::new();
+        out.insert("relay".into(), state.cfg.relay_label.clone().into());
+        out.insert("version".into(), crate::VERSION.into());
+        match serde_json::to_value(&accounts) {
+            Ok(v) => out.insert("accounts".into(), v),
+            Err(_) => return text_error(500, "internal error"),
+        };
+        match jmap_types::go_json::to_vec(&serde_json::Value::Object(out)) {
+            Ok(body) => json_response(200, body),
+            Err(_) => text_error(500, "internal error"),
+        }
+    }
+
+    pub fn admin_account_detail(state: &RelayState, req: &Request<()>) -> Response<Body> {
+        if req.method() != axum::http::Method::GET {
+            return method_not_allowed();
+        }
+        let addr = req
+            .uri()
+            .path()
+            .strip_prefix("/admin/accounts/")
+            .unwrap_or_default();
+        // The **last** `@`, because a localpart may contain one.
+        let Some(at) = addr.rfind('@') else {
+            return text_error(400, "bad address");
+        };
+        if at == 0 || at == addr.len() - 1 {
+            return text_error(400, "bad address");
+        }
+        let (localpart, domain) = (&addr[..at], &addr[at + 1..]);
+        if !state.data_dir.join(domain).join(localpart).exists() {
+            return text_error(404, "not found");
+        }
+        let limit = query_param(req, "limit")
+            .and_then(|q| q.parse::<usize>().ok())
+            .filter(|n| *n > 0)
+            .unwrap_or(jmapserver::activity::DEFAULT_LIMIT);
+
+        let activity =
+            jmapserver::activity::read_activity(&state.data_dir, domain, localpart, limit)
+                .unwrap_or_default();
+        let summary = jmapserver::admin::account_summary(
+            &state.data_dir,
+            domain,
+            localpart,
+            activity.first().map(|e| e.time.clone()),
+        );
+        let usage: std::collections::BTreeMap<String, u64> =
+            jmapserver::admin::usage_breakdown(&state.data_dir, domain, localpart)
+                .into_iter()
+                .collect();
+
+        // The detail embeds the summary's fields, so it is assembled as one
+        // object rather than nested — Go embeds the struct.
+        let Ok(serde_json::Value::Object(mut out)) = serde_json::to_value(&summary) else {
+            return text_error(500, "internal error");
+        };
+        match (serde_json::to_value(usage), serde_json::to_value(&activity)) {
+            (Ok(u), Ok(a)) => {
+                out.insert("usage".into(), u);
+                out.insert("activity".into(), a);
+            }
+            _ => return text_error(500, "internal error"),
+        }
+        match jmap_types::go_json::to_vec(&serde_json::Value::Object(out)) {
+            Ok(body) => json_response(200, body),
+            Err(_) => text_error(500, "internal error"),
+        }
+    }
+
+    fn now_unix() -> i64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0)
     }
 }
 

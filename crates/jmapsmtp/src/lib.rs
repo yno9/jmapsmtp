@@ -5,6 +5,13 @@
 //! The binary is a thin `main` over this library, so the integration tests can
 //! drive the same modules the relay runs.
 
+/// Overridable at build time, as Go's `-ldflags "-X main.version=…"` is.
+/// Reported by /admin/accounts and the build-info metric.
+pub const VERSION: &str = match option_env!("JMAPSMTP_VERSION") {
+    Some(v) => v,
+    None => "dev",
+};
+
 pub mod auth_env;
 pub mod autocrypt;
 pub mod bearer;
