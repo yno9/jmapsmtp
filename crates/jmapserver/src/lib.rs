@@ -7,6 +7,7 @@
 //! plan is to split it back out into its own repository once the ActivityPub
 //! relay (go-jmapap) is ported too (PLAN.md §8-F-2).
 
+pub mod admin;
 pub mod authtoken;
 pub mod contacts;
 pub mod devicekeys;

@@ -831,6 +831,49 @@ Rust 側はアカウント検索の前に小文字化する。
 
 ---
 
+### 11.16 管理系の数字が、Go 実装の中で互いに食い違う
+
+`ListProvisioned`（`/admin/accounts` の元）は `peers` を除外するが
+**`_domains` は除外しない**。
+metrics のコレクタは**どちらも除外しない**（独自にディレクトリを数える）。
+
+oracle で実測（`a.test/alice` が唯一の実アカウント、
+`a.test/peers/` と `_domains/byo.test/` が存在する状態）:
+
+```
+GET /admin/accounts
+  → "byo.test@_domains"   ← 存在しないアドレス
+  → "alice@a.test"
+
+GET /metrics
+  biset_accounts{domain="_domains"} 1
+  biset_accounts{domain="a.test"}   2   ← peers を 1 アカウントと数えている
+```
+
+つまり **同じドメインについて、一覧は 1、メトリクスは 2** と答える。
+
+#### 影響
+
+- **アカウント数の監視が水増しされる**。
+  水増し量は「peer 鍵のあるドメイン数 + 登録済みカスタムドメイン数」
+- `ListProvisioned` は **`anchor.Drain` の元でもある**ので、
+  存在しないアドレス（`byo.test@_domains`）を release しようとする。
+  破壊的操作の中のノイズ
+
+Rust 側は:
+
+1. `list_provisioned` で `_domains` と `peers` の両方を除外する
+2. **metrics も同じ walk を使う**ので、
+   `biset_accounts` の合計と `/admin/accounts` の行数が**必ず一致する**
+
+`admin_interop` が「oracle の 2 つの答えが今も食い違っていること」と
+「移植側の 2 つが一致すること」の**両方**を要求する。
+
+> 運用者にとっては、どちらかが間違っていることより
+> **2 つが食い違っていて突き合わせられない**ことのほうが悪い。
+
+---
+
 ### 11.9 差分ハーネスでの扱い
 
 観測可能な差異は、シナリオのステップに宣言する:
