@@ -529,7 +529,9 @@ HTTP 層（axum ルータ・CORS・SSE）と全体 difftest は **M6 に繰り�
 
 **M6 完了 — 受信と送信の両方が通るリレーになった。**
 
-残り: **M7** — 受信 STARTTLS、anchor クライアント、Web Push 送信。
+| M7a | 受信 STARTTLS（`inbound_tls`） | `2b51178` |
+
+残り: **M7b** — anchor クライアント、Web Push 送信。
 `main.rs` の `NOT_YET_WIRED` が列挙している。
 その後 **M8**（統合検証、ARC.md / README.md / MIGRATION.md、ベンチマーク）。
 `server_interop` の `the_unwired_routes_are_the_ones_named_here` が
