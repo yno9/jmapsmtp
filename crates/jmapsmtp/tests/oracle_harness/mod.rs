@@ -314,6 +314,88 @@ fn read_chunked(r: &mut BufReader<TcpStream>) -> Vec<u8> {
     out
 }
 
+/// A raw GET against any port, returning `(status, body, location)`.
+///
+/// Shared with tests that drive this port's own server, so both sides are read
+/// by exactly the same code — a body that differs cannot be an artefact of two
+/// different clients.
+pub fn raw_get(port: u16, target: &str) -> (u16, String, String) {
+    let (status, body, location, _) = raw_request(port, target);
+    (status, body, location)
+}
+
+/// The response headers, lowercased.
+pub fn raw_headers(port: u16, target: &str) -> std::collections::BTreeMap<String, String> {
+    raw_request(port, target).3
+}
+
+fn raw_request(
+    port: u16,
+    target: &str,
+) -> (
+    u16,
+    String,
+    String,
+    std::collections::BTreeMap<String, String>,
+) {
+    let mut s = TcpStream::connect(format!("127.0.0.1:{port}")).unwrap();
+    s.set_read_timeout(Some(std::time::Duration::from_secs(10)))
+        .unwrap();
+    write!(
+        s,
+        "GET {target} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n"
+    )
+    .unwrap();
+    s.flush().unwrap();
+
+    let mut r = BufReader::new(s);
+    let mut line = String::new();
+    r.read_line(&mut line).unwrap();
+    let status: u16 = line
+        .split_whitespace()
+        .nth(1)
+        .and_then(|c| c.parse().ok())
+        .unwrap_or_else(|| panic!("unparseable status line {line:?}"));
+
+    let mut headers = std::collections::BTreeMap::new();
+    let mut chunked = false;
+    loop {
+        let mut h = String::new();
+        r.read_line(&mut h).unwrap();
+        let h = h.trim_end();
+        if h.is_empty() {
+            break;
+        }
+        if let Some((k, v)) = h.split_once(": ") {
+            headers.insert(k.to_lowercase(), v.to_string());
+        }
+        if h.eq_ignore_ascii_case("transfer-encoding: chunked") {
+            chunked = true;
+        }
+    }
+    let body = if chunked {
+        read_chunked(&mut r)
+    } else {
+        let mut body = Vec::new();
+        let _ = r.read_to_end(&mut body);
+        body
+    };
+    let location = headers.get("location").cloned().unwrap_or_default();
+    (
+        status,
+        String::from_utf8_lossy(&body).into_owned(),
+        location,
+        headers,
+    )
+}
+
+impl Oracle {
+    /// The response headers from the oracle, lowercased.
+    pub fn headers(&self, target: &str) -> std::collections::BTreeMap<String, String> {
+        raw_headers(self.http_port, target)
+    }
+}
+
 impl Drop for Oracle {
     fn drop(&mut self) {
         let _ = self.child.kill();

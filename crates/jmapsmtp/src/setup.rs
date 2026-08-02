@@ -187,15 +187,33 @@ pub fn signup(
 ///   provisioned by a relay running under another. A client previewing
 ///   `username@<relay hostname>` before signup was wrong whenever the two
 ///   differ. Absent when nothing is open to self-service registration.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+///
+/// Serialised as a **sorted map**, not a struct.
+///
+/// Go builds a `map[string]string` here, and `encoding/json` sorts map keys. A
+/// struct would emit declaration order and differ on the wire — found by
+/// running the two servers side by side.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RelayInfo {
     pub label: String,
     pub color: String,
     /// Always `"mail"` for this relay.
-    #[serde(rename = "type")]
     pub kind: &'static str,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub domain: Option<String>,
+}
+
+impl serde::Serialize for RelayInfo {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        let mut map = std::collections::BTreeMap::from([
+            ("label", self.label.as_str()),
+            ("color", self.color.as_str()),
+            ("type", self.kind),
+        ]);
+        if let Some(domain) = &self.domain {
+            map.insert("domain", domain);
+        }
+        serde::Serialize::serialize(&map, s)
+    }
 }
 
 pub fn relay_info(cfg: &Config) -> RelayInfo {

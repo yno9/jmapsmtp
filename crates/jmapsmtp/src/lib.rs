@@ -18,6 +18,7 @@ pub mod hooks;
 pub mod pgp;
 pub mod provision;
 pub mod routes;
+pub mod server;
 pub mod setup;
 pub mod setup_page;
 pub mod smtp_in;

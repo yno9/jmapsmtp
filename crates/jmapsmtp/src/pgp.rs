@@ -16,6 +16,9 @@ use std::io;
 use std::path::Path;
 
 use pgp::composed::{Deserializable, MessageBuilder, SignedPublicKey};
+
+/// An OpenPGP public key, re-exported so callers need not depend on `pgp`.
+pub type PublicKey = SignedPublicKey;
 use pgp::crypto::sym::SymmetricKeyAlgorithm;
 use pgp::ser::Serialize as _;
 
