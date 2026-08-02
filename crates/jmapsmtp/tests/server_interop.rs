@@ -779,6 +779,24 @@ fn the_custom_domain_records_and_refusals_match() {
     ours.stop();
 }
 
+/// Push and the event stream. The VAPID key is public; the other two need a
+/// credential.
+#[test]
+fn the_push_routes_and_event_stream_match() {
+    let Some((o, ours)) = both(seed_accounts) else {
+        return;
+    };
+    for target in [
+        "/jmap/push/vapid-public-key",
+        "/jmap/push/subscribe",
+        "/jmap/push/unsubscribe",
+        "/jmap/eventsource/",
+    ] {
+        compare(&o, &ours, target);
+    }
+    ours.stop();
+}
+
 // ── what is not wired ─────────────────────────────────────────────────────
 
 /// The routes still to be wired answer 501 here and something else on the
@@ -790,12 +808,10 @@ fn the_unwired_routes_are_the_ones_named_here() {
         return;
     };
 
-    let unwired = [
-        "/jmap/eventsource/",
-        "/jmap/push/vapid-public-key",
-        "/jmap/push/subscribe",
-        "/jmap/push/unsubscribe",
-    ];
+    // Everything the oracle serves is now wired. The list is kept — emptied —
+    // rather than deleted, because it is where the next unwired route goes and
+    // the loop below is what proves this port is not quietly answering 501.
+    let unwired: [&str; 0] = [];
 
     for target in unwired {
         let (our_status, _, _) = ours.get(target);

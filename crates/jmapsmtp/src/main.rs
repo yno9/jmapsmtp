@@ -82,6 +82,10 @@ async fn run() -> Result<(), String> {
         );
     }
 
+    // 8. Push subscriptions persist alongside the account data, so a restart
+    //    does not silently stop notifying every client.
+    state.load_push_subscriptions();
+
     // 11. A Store per configured account, plus the alias map. Fatal on
     //     failure: a relay that starts while silently dropping one account's
     //     mail looks healthy and is not.

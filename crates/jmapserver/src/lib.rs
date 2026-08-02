@@ -16,6 +16,7 @@ pub mod diddht;
 pub mod dispatch;
 pub mod methods;
 pub mod mime;
+pub mod push;
 pub mod refs;
 pub mod server;
 pub mod storage;

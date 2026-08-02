@@ -235,6 +235,160 @@ async fn the_metrics_token_does_not_open_the_admin_routes() {
     assert_eq!(with("admin-secret", "/metrics").await, 401);
 }
 
+// ── push and the event stream ─────────────────────────────────────────────
+
+/// An account with a credential, for the routes that need one.
+fn state_with_account() -> (Arc<RelayState>, String) {
+    use base64::Engine as _;
+    const TOKEN: &[u8] = b"server-unit-token-00000000000000";
+    let state = state();
+    crate::auth_env::write_auth_hash(
+        &state.data_dir,
+        "a.test",
+        "alice",
+        &jmapserver::hash_auth_token(TOKEN),
+    )
+    .unwrap();
+    let password = base64::engine::general_purpose::STANDARD.encode(TOKEN);
+    let auth = base64::engine::general_purpose::STANDARD.encode(format!("alice@a.test:{password}"));
+    (state, auth)
+}
+
+/// The stream sends its first frame **immediately**, so a client knows it is
+/// live rather than waiting for a change that may be hours away.
+#[tokio::test]
+async fn the_event_stream_opens_with_a_state_frame() {
+    let (state, auth) = state_with_account();
+    let req = Request::builder()
+        .uri("/jmap/eventsource/")
+        .header(header::AUTHORIZATION, format!("Basic {auth}"))
+        .body(Body::empty())
+        .unwrap();
+    let res = app(state.clone()).oneshot(req).await.unwrap();
+
+    assert_eq!(res.status().as_u16(), 200);
+    assert_eq!(header(&res, "content-type"), "text/event-stream");
+    assert_eq!(header(&res, "cache-control"), "no-cache");
+    // Over HTTP/2 a hop-by-hop header is a protocol violation and resets the
+    // stream — it surfaced as ERR_HTTP2_PROTOCOL_ERROR after the 200 was
+    // already sent.
+    assert_eq!(header(&res, "connection"), "", "no keep-alive header");
+
+    let mut body = res.into_body().into_data_stream();
+    let first = next_frame(&mut body).await;
+    assert_eq!(first, jmapserver::push::STATE_EVENT);
+
+    // A change wakes it again.
+    state.hub.notify();
+    let second = next_frame(&mut body).await;
+    assert_eq!(second, jmapserver::push::STATE_EVENT);
+}
+
+async fn next_frame(
+    body: &mut (impl futures_util::Stream<Item = Result<axum::body::Bytes, axum::Error>> + Unpin),
+) -> String {
+    use futures_util::StreamExt as _;
+    let chunk = tokio::time::timeout(std::time::Duration::from_secs(5), body.next())
+        .await
+        .expect("a frame within five seconds")
+        .expect("the stream should not end")
+        .expect("a readable chunk");
+    String::from_utf8_lossy(&chunk).into_owned()
+}
+
+/// Subscribe and unsubscribe, through the routes, with persistence — the path
+/// a browser actually takes.
+#[tokio::test]
+async fn a_push_subscription_round_trips_through_the_routes() {
+    let (state, auth) = state_with_account();
+    state.load_push_subscriptions();
+
+    let post = |state: Arc<RelayState>, target: &'static str, auth: String, body: String| async move {
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri(target)
+            .header(header::AUTHORIZATION, format!("Basic {auth}"))
+            .body(Body::from(body))
+            .unwrap();
+        app(state).oneshot(req).await.unwrap().status().as_u16()
+    };
+
+    let account = jmap_types::Id::from("alice@a.test");
+    assert_eq!(
+        post(
+            state.clone(),
+            "/jmap/push/subscribe",
+            auth.clone(),
+            r#"{"endpoint":"https://push.test/1","keys":{"p256dh":"k","auth":"a"}}"#.into()
+        )
+        .await,
+        204
+    );
+    assert_eq!(state.push.read().for_account(&account).len(), 1);
+
+    // Persisted, so a restart does not silently stop notifying.
+    assert!(jmapserver::push::PushRegistry::path(&state.data_dir).exists());
+
+    assert_eq!(
+        post(
+            state.clone(),
+            "/jmap/push/unsubscribe",
+            auth.clone(),
+            r#"{"endpoint":"https://push.test/1"}"#.into()
+        )
+        .await,
+        204
+    );
+    assert!(state.push.read().for_account(&account).is_empty());
+
+    // A body with no endpoint is a bad request, not a silent no-op.
+    assert_eq!(
+        post(state.clone(), "/jmap/push/subscribe", auth, r#"{}"#.into()).await,
+        400
+    );
+}
+
+/// One account's credential cannot register a subscription for another: the
+/// account comes from the credential, and the body carries no address.
+#[tokio::test]
+async fn a_push_subscription_is_scoped_to_the_credential() {
+    let (state, auth) = state_with_account();
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/jmap/push/subscribe")
+        .header(header::AUTHORIZATION, format!("Basic {auth}"))
+        .body(Body::from(
+            r#"{"endpoint":"https://push.test/1","accountId":"bob@a.test"}"#,
+        ))
+        .unwrap();
+    assert_eq!(
+        app(state.clone())
+            .oneshot(req)
+            .await
+            .unwrap()
+            .status()
+            .as_u16(),
+        204
+    );
+    assert_eq!(
+        state
+            .push
+            .read()
+            .for_account(&jmap_types::Id::from("alice@a.test"))
+            .len(),
+        1,
+        "registered against the credential"
+    );
+    assert!(
+        state
+            .push
+            .read()
+            .for_account(&jmap_types::Id::from("bob@a.test"))
+            .is_empty(),
+        "an accountId in the body is ignored"
+    );
+}
+
 // ── bring-your-own domain ─────────────────────────────────────────────────
 
 /// A registration that succeeds — the half `server_interop` cannot reach,

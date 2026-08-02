@@ -46,6 +46,9 @@ pub struct RelayState {
     pub metrics_token: String,
     /// Broadcasts state changes to event-source subscribers.
     pub hub: Arc<jmapserver::Hub>,
+    /// Web Push subscriptions, and the VAPID identity they subscribe under.
+    pub push: parking_lot::RwLock<jmapserver::push::PushRegistry>,
+    pub vapid: jmapserver::push::Vapid,
     /// Resolves the TXT records that prove control of a custom domain.
     ///
     /// Injected rather than constructed inline so a test can answer without a
@@ -67,6 +70,11 @@ impl RelayState {
     /// opens, which is the whole point of using [`GoMux`].
     pub fn new(cfg: Config, data_dir: std::path::PathBuf) -> Arc<RelayState> {
         let mux = build_mux(&cfg, false);
+        let cfg_vapid = (
+            cfg.vapid_public_key.clone(),
+            cfg.vapid_private_key.clone(),
+            cfg.vapid_subscriber.clone(),
+        );
         Arc::new(RelayState {
             cfg,
             data_dir,
@@ -77,6 +85,8 @@ impl RelayState {
             admin_token: crate::bearer::token_from_env("ADMIN_TOKEN"),
             metrics_token: crate::bearer::token_from_env("METRICS_TOKEN"),
             hub: Arc::new(jmapserver::Hub::new()),
+            push: parking_lot::RwLock::new(jmapserver::push::PushRegistry::default()),
+            vapid: jmapserver::push::Vapid::new(&cfg_vapid.0, &cfg_vapid.1, &cfg_vapid.2),
             txt: Arc::new(NoDns),
             smtp_sent: std::sync::atomic::AtomicU64::new(0),
             smtp_failed: std::sync::atomic::AtomicU64::new(0),
@@ -158,6 +168,14 @@ impl RelayState {
 
     pub fn patterns(&self) -> Vec<&str> {
         self.mux.patterns()
+    }
+
+    /// Load persisted push subscriptions and keep writing them there.
+    ///
+    /// A browser does not re-subscribe unprompted, so subscriptions lost on
+    /// restart are lost permanently — the user simply stops being notified.
+    pub fn load_push_subscriptions(&self) {
+        self.push.write().set_persist_dir(&self.data_dir);
     }
 
     /// Install the live DNS client. Must be called from inside a runtime.
@@ -488,6 +506,10 @@ async fn dispatch(
         "/metrics" => handlers::metrics(&state),
         "/domain/verify-token" => handlers::domain_verify_token(&state, &req),
         "/domain/add" => handlers::domain_add(&state, &req, &body),
+        "/jmap/push/vapid-public-key" => handlers::push_vapid_key(&state),
+        "/jmap/push/subscribe" => handlers::push_subscribe(&state, &req, &body),
+        "/jmap/push/unsubscribe" => handlers::push_unsubscribe(&state, &req, &body),
+        "/jmap/eventsource/" => handlers::event_source(&state, &req),
         _ => text_error(501, "not implemented"),
     }
 }
@@ -1452,6 +1474,166 @@ mod handlers {
             }
             Err(_) => (String::new(), String::new()),
         }
+    }
+
+    // ── push and the event stream ─────────────────────────────────────────
+
+    /// The VAPID public key, served **unauthenticated**: a service worker needs
+    /// it before the page has a credential, and it is a public key.
+    pub fn push_vapid_key(state: &RelayState) -> Response<Body> {
+        let mut res = Response::new(Body::from(state.vapid.public.clone()));
+        res.headers_mut()
+            .insert(header::CONTENT_TYPE, HeaderValue::from_static("text/plain"));
+        set_route_cors(
+            &mut res,
+            "GET, POST, OPTIONS",
+            "Authorization, Content-Type",
+        );
+        res
+    }
+
+    pub fn push_subscribe(state: &RelayState, req: &Request<()>, body: &[u8]) -> Response<Body> {
+        #[derive(serde::Deserialize)]
+        struct Keys {
+            #[serde(default)]
+            p256dh: String,
+            #[serde(default)]
+            auth: String,
+        }
+        #[derive(serde::Deserialize)]
+        struct SubscribeRequest {
+            #[serde(default)]
+            endpoint: String,
+            #[serde(default)]
+            keys: Option<Keys>,
+        }
+
+        let mut res = (|| {
+            let Some((domain, localpart)) = authenticate(state, req) else {
+                return unauthorized_jmap();
+            };
+            if req.method() != axum::http::Method::POST {
+                return method_not_allowed();
+            }
+            let Ok(request) = serde_json::from_slice::<SubscribeRequest>(body) else {
+                return text_error(400, "bad request");
+            };
+            if request.endpoint.is_empty() {
+                return text_error(400, "bad request");
+            }
+            let keys = request.keys.unwrap_or(Keys {
+                p256dh: String::new(),
+                auth: String::new(),
+            });
+            state.push.write().add(
+                &jmap_types::Id::from(format!("{localpart}@{domain}").as_str()),
+                jmapserver::push::PushSubscription {
+                    endpoint: request.endpoint,
+                    p256dh: keys.p256dh,
+                    auth: keys.auth,
+                },
+            );
+            no_content()
+        })();
+        set_route_cors(
+            &mut res,
+            "GET, POST, OPTIONS",
+            "Authorization, Content-Type",
+        );
+        res
+    }
+
+    pub fn push_unsubscribe(state: &RelayState, req: &Request<()>, body: &[u8]) -> Response<Body> {
+        #[derive(serde::Deserialize)]
+        struct UnsubscribeRequest {
+            #[serde(default)]
+            endpoint: String,
+        }
+        let mut res = (|| {
+            let Some((domain, localpart)) = authenticate(state, req) else {
+                return unauthorized_jmap();
+            };
+            if req.method() != axum::http::Method::POST {
+                return method_not_allowed();
+            }
+            let Ok(request) = serde_json::from_slice::<UnsubscribeRequest>(body) else {
+                return text_error(400, "bad request");
+            };
+            if request.endpoint.is_empty() {
+                return text_error(400, "bad request");
+            }
+            state.push.write().remove(
+                &jmap_types::Id::from(format!("{localpart}@{domain}").as_str()),
+                &request.endpoint,
+            );
+            no_content()
+        })();
+        set_route_cors(
+            &mut res,
+            "GET, POST, OPTIONS",
+            "Authorization, Content-Type",
+        );
+        res
+    }
+
+    /// `GET /jmap/eventsource/` — a Server-Sent Events stream that wakes a
+    /// client when something changed.
+    ///
+    /// **No `Connection: keep-alive`.** Over HTTP/2 — which browsers use for
+    /// any TLS-served connection — a hop-by-hop header is a protocol violation
+    /// (RFC 7540 §8.1.2.2) and the stream is reset. It surfaced as
+    /// `ERR_HTTP2_PROTOCOL_ERROR` after the 200 had already gone out. HTTP/1.1
+    /// keep-alive needs no header either way.
+    pub fn event_source(state: &RelayState, req: &Request<()>) -> Response<Body> {
+        let mut res = (|| {
+            if authenticate(state, req).is_none() {
+                return unauthorized_jmap();
+            }
+            let mut events = state.hub.subscribe_events();
+            let stream = async_stream::stream! {
+                // The first frame goes out immediately, so a client knows the
+                // stream is live rather than waiting for a change that may be
+                // hours away.
+                yield Ok::<_, std::io::Error>(axum::body::Bytes::from_static(
+                    jmapserver::push::STATE_EVENT.as_bytes(),
+                ));
+                let mut ping = tokio::time::interval(std::time::Duration::from_secs(
+                    jmapserver::push::PING_INTERVAL_SECS,
+                ));
+                ping.tick().await;
+                loop {
+                    tokio::select! {
+                        received = events.recv() => {
+                            if received.is_none() {
+                                break;
+                            }
+                            yield Ok(axum::body::Bytes::from_static(
+                                jmapserver::push::STATE_EVENT.as_bytes(),
+                            ));
+                        }
+                        _ = ping.tick() => {
+                            yield Ok(axum::body::Bytes::from_static(
+                                jmapserver::push::PING_EVENT.as_bytes(),
+                            ));
+                        }
+                    }
+                }
+            };
+            let mut res = Response::new(Body::from_stream(stream));
+            res.headers_mut().insert(
+                header::CONTENT_TYPE,
+                HeaderValue::from_static("text/event-stream"),
+            );
+            res.headers_mut()
+                .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+            res
+        })();
+        set_route_cors(
+            &mut res,
+            "GET, POST, OPTIONS",
+            "Authorization, Content-Type",
+        );
+        res
     }
 
     fn now_unix() -> i64 {
