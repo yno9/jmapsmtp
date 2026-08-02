@@ -8,6 +8,7 @@
 //! relay (go-jmapap) is ported too (PLAN.md §8-F-2).
 
 pub mod authtoken;
+pub mod contacts;
 pub mod devicekeys;
 pub mod diddht;
 pub mod dispatch;
