@@ -507,8 +507,11 @@ HTTP 層（axum ルータ・CORS・SSE）と全体 difftest は **M6 に繰り�
 
 **エンドポイントの移植と、サーバの骨格は終わった。**
 
-残り: **M6r** — 各ハンドラを `server::dispatch` に接続する
-（現在は `/relay-info` と `/setup` のみ。他は 501）。
+| M6r | WKD・オンボーディング・連絡先の配線（11 ルート） | `050a687` |
+
+残り: **M6s** — 残りのハンドラ配線
+（`/account/provision` `/account/session` `/account/devices` `/account/delete`
+`/account/storage/*` `/metrics` `/admin/*` `/domain/*` と JMAP 本体）。
 `server_interop` の `the_unwired_routes_are_the_ones_named_here` が
 残作業を名前で列挙している。
 併せて SPEC §2 のステップ 8/9/11/13/14（handler と Store、maintenance、SMTP）。
