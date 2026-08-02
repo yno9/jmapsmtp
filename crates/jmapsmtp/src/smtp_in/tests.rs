@@ -74,6 +74,7 @@ fn the_ehlo_response_is_a_well_formed_multiline_reply() {
     let out = ehlo_response(&Config {
         hostname: "mail.example.com".into(),
         starttls: true,
+        tls_available: false,
         enable_smtputf8: true,
     });
     let lines: Vec<&str> = out.trim_end_matches("\r\n").split("\r\n").collect();
@@ -95,6 +96,7 @@ fn disabling_starttls_and_smtputf8_drops_exactly_those() {
     let out = ehlo_response(&Config {
         hostname: "h".into(),
         starttls: false,
+        tls_available: false,
         enable_smtputf8: false,
     });
     assert!(!out.contains("STARTTLS"));
@@ -111,6 +113,7 @@ fn auth_is_never_advertised() {
         let out = ehlo_response(&Config {
             hostname: "h".into(),
             starttls,
+            tls_available: false,
             enable_smtputf8: true,
         });
         assert!(!out.contains("AUTH"), "AUTH must not appear");

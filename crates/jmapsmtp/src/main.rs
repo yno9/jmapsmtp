@@ -149,9 +149,6 @@ const NOT_YET_WIRED: &[&str] = &[
     // nothing hands it to smtp_out yet — `hooks` has the decisions, the
     // assembly is missing.
     "outbound submission: the OnSubmitEmail hook to the SMTP client",
-    // The listener advertises STARTTLS and answers 454. `smtp_in::handle` is
-    // generic over the transport, so this is re-entering it on the TLS side.
-    "inbound STARTTLS",
     // Claim, release and device vouches against the identity anchor. Every
     // route that needs one answers 503 today.
     "the anchor client",

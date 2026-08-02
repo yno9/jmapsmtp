@@ -24,6 +24,7 @@ pub mod dns;
 pub mod gomux;
 pub mod handler;
 pub mod hooks;
+pub mod inbound_tls;
 pub mod maintenance;
 pub mod outbound;
 pub mod pgp;

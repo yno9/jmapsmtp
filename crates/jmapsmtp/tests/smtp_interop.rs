@@ -113,6 +113,7 @@ async fn start_server(served: &[&str]) -> (String, Arc<Recorder>) {
     let cfg = Arc::new(Config {
         hostname: "mail.example.com".into(),
         starttls: true,
+        tls_available: false,
         enable_smtputf8: true,
     });
     let for_task = backend.clone();

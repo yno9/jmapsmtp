@@ -118,30 +118,60 @@ pub async fn serve_smtp(
     listener: tokio::net::TcpListener,
     state: Arc<RelayState>,
 ) -> std::io::Result<()> {
-    let cfg = crate::smtp_in::Config {
-        hostname: state.cfg.hostname.clone(),
-        // Advertised, and answered 454 until the TLS handshake is wired —
-        // `smtp_in::handle` is generic over the transport, so the caller
-        // re-enters it on the TLS side. Refusing beats stalling an
-        // opportunistic sender.
-        starttls: true,
-        enable_smtputf8: true,
-    };
+    // Built once: the certificate is re-read per handshake by the reloader
+    // inside it, but the TLS configuration itself does not change.
+    let tls = crate::inbound_tls::server_config(&state.cfg, &state.data_dir);
+    match &tls {
+        Some(_) => println!("[smtp] STARTTLS enabled"),
+        None => println!("[smtp] STARTTLS disabled (no certificate)"),
+    }
+
     loop {
         let (stream, peer) = listener.accept().await?;
         let state = state.clone();
-        let cfg = crate::smtp_in::Config {
-            hostname: cfg.hostname.clone(),
-            starttls: cfg.starttls,
-            enable_smtputf8: cfg.enable_smtputf8,
-        };
+        let tls = tls.clone();
         tokio::spawn(async move {
-            let backend = Delivery { state };
-            if let Err(e) = crate::smtp_in::handle(stream, &cfg, &backend).await {
+            if let Err(e) = serve_session(stream, state, tls).await {
                 eprintln!("[smtp] session from {peer} ended: {e}");
             }
         });
     }
+}
+
+/// One session, upgrading to TLS if the client asks and a certificate exists.
+async fn serve_session(
+    mut stream: tokio::net::TcpStream,
+    state: Arc<RelayState>,
+    tls: Option<Arc<rustls::ServerConfig>>,
+) -> std::io::Result<()> {
+    let cfg = crate::smtp_in::Config {
+        hostname: state.cfg.hostname.clone(),
+        starttls: true,
+        tls_available: tls.is_some(),
+        enable_smtputf8: true,
+    };
+    let backend = Delivery { state };
+
+    if crate::smtp_in::handle(&mut stream, &cfg, &backend).await?
+        != crate::smtp_in::Outcome::StartTls
+    {
+        return Ok(());
+    }
+    let Some(tls) = tls else {
+        return Ok(());
+    };
+
+    let mut upgraded = tokio_rustls::TlsAcceptor::from(tls).accept(stream).await?;
+    // STARTTLS is **not** advertised again: RFC 3207 §4.2 forbids it, and a
+    // client that saw it a second time would have no way to tell whether the
+    // first upgrade took.
+    let cfg = crate::smtp_in::Config {
+        starttls: false,
+        tls_available: false,
+        ..cfg
+    };
+    crate::smtp_in::handle(&mut upgraded, &cfg, &backend).await?;
+    Ok(())
 }
 
 /// Run the inactive-account sweep on its schedule.

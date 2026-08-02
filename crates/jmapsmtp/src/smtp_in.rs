@@ -33,8 +33,12 @@ pub trait Backend: Send + Sync + 'static {
 pub struct Config {
     /// Announced in the greeting and in the `EHLO` response.
     pub hostname: String,
-    /// Advertise `STARTTLS`. The handshake itself is the caller's to wire up.
+    /// Advertise `STARTTLS`.
     pub starttls: bool,
+    /// Whether a certificate is actually loaded. Advertised-but-unavailable is
+    /// answered `454`; available is answered `220` and the session ends with
+    /// [`Outcome::StartTls`] for the caller to upgrade.
+    pub tls_available: bool,
     pub enable_smtputf8: bool,
 }
 
@@ -43,6 +47,7 @@ impl Default for Config {
         Config {
             hostname: "localhost".into(),
             starttls: true,
+            tls_available: false,
             enable_smtputf8: true,
         }
     }
@@ -75,7 +80,8 @@ pub async fn serve(listener: TcpListener, cfg: Arc<Config>, backend: Arc<dyn Bac
         };
         let (cfg, backend) = (cfg.clone(), backend.clone());
         tokio::spawn(async move {
-            if let Err(e) = handle(stream, &cfg, backend.as_ref()).await {
+            let mut stream = stream;
+            if let Err(e) = handle(&mut stream, &cfg, backend.as_ref()).await {
                 // A peer hanging up mid-session is ordinary, not an error
                 // worth a full log line at anything above debug.
                 tracing::debug!("[smtp] session with {peer} ended: {e}");
@@ -84,11 +90,36 @@ pub async fn serve(listener: TcpListener, cfg: Arc<Config>, backend: Arc<dyn Bac
     }
 }
 
+/// How a session ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Outcome {
+    /// The client quit, or the connection closed.
+    Done,
+    /// The client sent `STARTTLS` and was answered `220`. The caller owns the
+    /// handshake and re-enters [`handle`] on the upgraded stream.
+    ///
+    /// Returned rather than handled here so this module needs no TLS
+    /// dependency and stays testable over a plain byte stream.
+    StartTls,
+}
+
 /// Drive one session to completion.
-pub async fn handle<S>(stream: S, cfg: &Config, backend: &dyn Backend) -> std::io::Result<()>
+///
+/// Returns [`Outcome::StartTls`] when the client asked to upgrade and
+/// [`Config::tls_available`] said it could. **Everything negotiated before the
+/// upgrade is discarded**: RFC 3207 §4.2 requires the server to forget the
+/// EHLO and any envelope, because what came before was not protected and a
+/// man in the middle could have written it.
+pub async fn handle<S>(
+    stream: &mut S,
+    cfg: &Config,
+    backend: &dyn Backend,
+) -> std::io::Result<Outcome>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
+    // Borrowed rather than consumed so the caller still owns the socket after
+    // a `STARTTLS`, and can hand the same one to the TLS acceptor.
     let (read, mut write) = tokio::io::split(stream);
     let mut read = BufReader::new(read);
     let mut session = Session::default();
@@ -101,7 +132,7 @@ where
     loop {
         line.clear();
         if read.read_line(&mut line).await? == 0 {
-            return Ok(()); // the peer hung up
+            return Ok(Outcome::Done); // the peer hung up
         }
         let command = line.trim_end_matches(['\r', '\n']);
         let (verb, rest) = split_command(command);
@@ -190,7 +221,7 @@ where
             "NOOP" => write.write_all(b"250 2.0.0 OK\r\n").await?,
             "QUIT" => {
                 write.write_all(b"221 2.0.0 Bye\r\n").await?;
-                return Ok(());
+                return Ok(Outcome::Done);
             }
             "AUTH" => {
                 // The relay authenticates nobody on the inbound path: this is
@@ -200,11 +231,16 @@ where
                     .write_all(b"502 5.5.1 This is a public MX; no authentication is offered.\r\n")
                     .await?;
             }
+            "STARTTLS" if cfg.starttls && cfg.tls_available => {
+                write.write_all(b"220 2.0.0 Ready to start TLS\r\n").await?;
+                write.flush().await?;
+                return Ok(Outcome::StartTls);
+            }
             "STARTTLS" if cfg.starttls => {
-                // Upgrading the stream is the caller's job — `handle` is
-                // generic over the transport precisely so it can be re-entered
-                // on the TLS side. Refusing here rather than pretending keeps
-                // an opportunistic sender on plaintext instead of stalling it.
+                // Advertised but not available — no certificate loaded.
+                // Refusing rather than stalling keeps an opportunistic sender
+                // on plaintext, which is a delivered message rather than a
+                // timed-out one.
                 write
                     .write_all(b"454 4.7.0 TLS not available on this connection\r\n")
                     .await?;

@@ -214,6 +214,211 @@ fn delivery_is_logged_with_its_outcome() {
     assert_eq!(events[0].result, "failed", "newest first");
 }
 
+// ── STARTTLS ──────────────────────────────────────────────────────────────
+
+/// The upgrade, over a real socket: advertised, accepted, and the session
+/// continues on the encrypted stream.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_client_can_upgrade_the_session_with_starttls() {
+    use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
+
+    let state = one_account();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let _ = serve_smtp(listener, state).await;
+    });
+
+    let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let (read, mut write) = tokio::io::split(stream);
+    let mut read = BufReader::new(read);
+    let mut line = String::new();
+
+    read.read_line(&mut line).await.unwrap();
+    assert!(line.starts_with("220 "), "greeting: {line}");
+
+    write.write_all(b"EHLO client.test\r\n").await.unwrap();
+    let mut caps = String::new();
+    loop {
+        line.clear();
+        read.read_line(&mut line).await.unwrap();
+        caps.push_str(&line);
+        if line.starts_with("250 ") {
+            break;
+        }
+    }
+    assert!(caps.contains("STARTTLS"), "advertised: {caps}");
+
+    write.write_all(b"STARTTLS\r\n").await.unwrap();
+    line.clear();
+    read.read_line(&mut line).await.unwrap();
+    assert!(
+        line.starts_with("220 "),
+        "the server agreed to upgrade: {line}"
+    );
+
+    // The plaintext side is finished; anything after this is TLS records.
+    // Reading one confirms the server is speaking TLS rather than SMTP.
+    let mut first = [0u8; 1];
+    use tokio::io::AsyncReadExt as _;
+    write.write_all(&[0x16, 0x03, 0x01]).await.unwrap();
+    let _ = tokio::time::timeout(
+        std::time::Duration::from_millis(300),
+        read.read_exact(&mut first),
+    )
+    .await;
+    assert_ne!(
+        first[0], b'5',
+        "an SMTP error line here would mean no upgrade happened"
+    );
+}
+
+/// After the upgrade, `STARTTLS` is **not** advertised again. RFC 3207 §4.2
+/// forbids it, and a client that saw it twice would have no way to tell
+/// whether the first upgrade took.
+///
+/// This is the only test that completes the handshake, because it is the only
+/// question that needs the encrypted side.
+#[tokio::test(flavor = "multi_thread")]
+async fn starttls_is_not_advertised_again_after_the_upgrade() {
+    use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
+
+    let state = one_account();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let _ = serve_smtp(listener, state).await;
+    });
+
+    let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+    // Greeting, EHLO, STARTTLS — read line by line off the plaintext side.
+    {
+        let mut buf = vec![0u8; 4096];
+        use tokio::io::AsyncReadExt as _;
+        let _ = stream.read(&mut buf).await.unwrap();
+        stream.write_all(b"EHLO client.test\r\n").await.unwrap();
+        let _ = stream.read(&mut buf).await.unwrap();
+        stream.write_all(b"STARTTLS\r\n").await.unwrap();
+        let n = stream.read(&mut buf).await.unwrap();
+        assert!(
+            String::from_utf8_lossy(&buf[..n]).starts_with("220 "),
+            "the server agreed"
+        );
+    }
+
+    let tls = tokio_rustls::TlsConnector::from(std::sync::Arc::new(accept_any_client_config()));
+    let server_name = rustls::pki_types::ServerName::try_from("localhost").unwrap();
+    let upgraded = tls.connect(server_name, stream).await.expect("handshake");
+
+    let (read, mut write) = tokio::io::split(upgraded);
+    let mut read = BufReader::new(read);
+    write.write_all(b"EHLO client.test\r\n").await.unwrap();
+
+    let mut caps = String::new();
+    loop {
+        let mut line = String::new();
+        read.read_line(&mut line).await.unwrap();
+        caps.push_str(&line);
+        if line.starts_with("250 ") || line.is_empty() {
+            break;
+        }
+    }
+    assert!(!caps.is_empty(), "the session continued over TLS");
+    assert!(
+        !caps.contains("STARTTLS"),
+        "RFC 3207 §4.2: not advertised again — {caps}"
+    );
+    // …and the session is otherwise intact.
+    assert!(caps.contains("SMTPUTF8"), "{caps}");
+}
+
+/// A client that accepts the relay's self-signed certificate.
+///
+/// Test-only, and it is what a real sending MX does on port 25 anyway: it
+/// cannot authenticate an arbitrary recipient domain, so it either accepts an
+/// unverified certificate or falls back to plaintext.
+fn accept_any_client_config() -> rustls::ClientConfig {
+    crate::inbound_tls::install_crypto_provider();
+
+    #[derive(Debug)]
+    struct AcceptAny;
+    impl rustls::client::danger::ServerCertVerifier for AcceptAny {
+        fn verify_server_cert(
+            &self,
+            _: &rustls::pki_types::CertificateDer<'_>,
+            _: &[rustls::pki_types::CertificateDer<'_>],
+            _: &rustls::pki_types::ServerName<'_>,
+            _: &[u8],
+            _: rustls::pki_types::UnixTime,
+        ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+            Ok(rustls::client::danger::ServerCertVerified::assertion())
+        }
+        fn verify_tls12_signature(
+            &self,
+            _: &[u8],
+            _: &rustls::pki_types::CertificateDer<'_>,
+            _: &rustls::DigitallySignedStruct,
+        ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+            Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+        }
+        fn verify_tls13_signature(
+            &self,
+            _: &[u8],
+            _: &rustls::pki_types::CertificateDer<'_>,
+            _: &rustls::DigitallySignedStruct,
+        ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+            Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+        }
+        fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+            rustls::crypto::ring::default_provider()
+                .signature_verification_algorithms
+                .supported_schemes()
+        }
+    }
+
+    rustls::ClientConfig::builder()
+        .dangerous()
+        .with_custom_certificate_verifier(std::sync::Arc::new(AcceptAny))
+        .with_no_client_auth()
+}
+
+/// Without a certificate the capability is still advertised and answered 454.
+/// Refusing keeps an opportunistic sender on plaintext — a delivered message
+/// rather than a timed-out one.
+#[tokio::test(flavor = "multi_thread")]
+async fn starttls_without_a_certificate_is_refused_not_stalled() {
+    use crate::smtp_in::{Config as SmtpConfig, Outcome};
+
+    let state = one_account();
+    let backend = Delivery { state };
+    let cfg = SmtpConfig {
+        hostname: "mx.a.test".into(),
+        starttls: true,
+        tls_available: false,
+        enable_smtputf8: true,
+    };
+
+    let (client, server) = tokio::io::duplex(4096);
+    let session = tokio::spawn(async move {
+        let mut server = server;
+        crate::smtp_in::handle(&mut server, &cfg, &backend).await
+    });
+
+    use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
+    let (read, mut write) = tokio::io::split(client);
+    let mut read = BufReader::new(read);
+    let mut line = String::new();
+    read.read_line(&mut line).await.unwrap();
+
+    write.write_all(b"STARTTLS\r\n").await.unwrap();
+    line.clear();
+    read.read_line(&mut line).await.unwrap();
+    assert!(line.starts_with("454 "), "refused, not stalled: {line}");
+
+    write.write_all(b"QUIT\r\n").await.unwrap();
+    assert_eq!(session.await.unwrap().unwrap(), Outcome::Done);
+}
+
 // ── the maintenance sweep ─────────────────────────────────────────────────
 
 /// A purge removes the routing as well as the data. Leaving an alias behind
