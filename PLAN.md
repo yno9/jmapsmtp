@@ -499,8 +499,9 @@ HTTP 層（axum ルータ・CORS・SSE）と全体 difftest は **M6 に繰り�
 | M6k | カスタムドメインと自己削除（`customdomain`） | `c121cda` |
 | M6l | ストレージ透明性（`jmapserver::storage`） | `c15f17a` |
 | M6m | DID 起点の連絡先キャッシュ（`jmapserver::contacts`） | `eaeefe5` |
+| M6n | 管理系とメトリクス（`jmapserver::admin`） | `2d5bddc` |
 
-残り: **M6n** — `/metrics` `/admin/*`、`/setup` の HTML、
+残り: **M6o** — `/setup` の HTML、activity ログ、
 そして **ハンドラ配線 + 実 HTTP サーバ**。
 最後が入ると `just difftest` が oracle 対 Rust で意味を持つ。
 
