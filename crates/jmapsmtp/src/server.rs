@@ -430,6 +430,9 @@ async fn dispatch(
         "/admin/accounts/" => handlers::admin_account_detail(&state, &req),
         "/.well-known/jmap" => handlers::jmap_session(&state, &req),
         "/jmap/api/" => handlers::jmap_api(&state, &req, &body),
+        "/account/provision" => handlers::account_provision(&state, &req, &body),
+        "/account/delete" => handlers::account_delete(&state, &req),
+        "/account/storage/purge-messages" => handlers::storage_purge(&state, &req),
         _ => text_error(501, "not implemented"),
     }
 }
@@ -1010,6 +1013,230 @@ mod handlers {
             "GET, POST, OPTIONS",
             "Authorization, Content-Type",
         );
+        res
+    }
+
+    // ── the account lifecycle ─────────────────────────────────────────────
+
+    /// `POST /account/provision` — where a DID becomes an account
+    /// (SPEC.md §10-A).
+    ///
+    /// The device key **is** the credential: the vouch is verified and written
+    /// before the account is registered, so there is no "create now, add a
+    /// device later" gap for someone else to walk into.
+    pub fn account_provision(state: &RelayState, req: &Request<()>, body: &[u8]) -> Response<Body> {
+        let mut res = (|| {
+            if req.method() != axum::http::Method::POST {
+                return method_not_allowed();
+            }
+            let Ok(request) = serde_json::from_slice::<crate::provision::ProvisionRequest>(body)
+            else {
+                return text_error(400, "invalid JSON");
+            };
+            let refuse = |r: crate::provision::Refusal| text_error(r.status(), r.message());
+
+            if let Err(r) = crate::provision::validate(&state.cfg, &request) {
+                return refuse(r);
+            }
+            let username = request.username.trim().to_lowercase();
+            let (domain, dom_cfg) = match crate::provision::resolve_domain(
+                &state.cfg,
+                &state.dynamic_domains,
+                &request.domain,
+            ) {
+                Ok(v) => v,
+                Err(r) => return refuse(r),
+            };
+            if let Err(r) = crate::provision::may_provision(&dom_cfg, &request.provision_secret) {
+                return refuse(r);
+            }
+
+            let acct_dir = crate::auth_env::account_dir(&state.data_dir, &domain, &username);
+            let already = state.dyn_accounts.contains(&format!("{username}@{domain}"))
+                || state
+                    .accounts
+                    .get(&format!("{username}@{domain}"))
+                    .is_some();
+            if crate::provision::name_is_taken(
+                &acct_dir,
+                &state.data_dir,
+                &domain,
+                &username,
+                already,
+            ) {
+                return refuse(crate::provision::Refusal::UsernameTaken);
+            }
+
+            match crate::provision::vouch_path(&state.cfg, &request.did) {
+                crate::provision::VouchPath::Impossible => {
+                    return refuse(crate::provision::Refusal::DidMethodNeedsAnchor);
+                }
+                // The anchor client is a milestone of its own. Refusing with
+                // the status Go uses for an unreachable anchor is the honest
+                // answer: from a client's side an unbuilt anchor and an
+                // unreachable one are the same condition.
+                //
+                // **Not covered by any test yet.** This branch needs
+                // `anchor_url` set, and an anchored relay would have to reach
+                // a real anchor for the comparison to mean anything — so it
+                // becomes testable when the anchor client lands, not before.
+                // Mutating it today changes nothing, which is why it is said
+                // here rather than left to look covered.
+                crate::provision::VouchPath::Anchor => {
+                    return refuse(crate::provision::Refusal::AnchorUnavailable);
+                }
+                crate::provision::VouchPath::Local => {
+                    let vouch = crate::devices::VouchRequest {
+                        username: username.clone(),
+                        domain: domain.clone(),
+                        did: request.did.clone(),
+                        device_pub_key: request.device_pub_key.clone(),
+                        label: request.device_label.clone(),
+                        bind_ts: request.device_vouch_ts,
+                        sig: request.device_vouch_sig.clone(),
+                    };
+                    if !jmapserver::diddht::verify_did_dht_vouch_local(
+                        &vouch.did,
+                        &vouch.device_pub_key,
+                        &vouch.label,
+                        vouch.bind_ts,
+                        &vouch.sig,
+                        now_unix(),
+                    ) {
+                        return refuse(crate::provision::Refusal::DeviceVouchRejected);
+                    }
+                    if crate::devices::write_device(
+                        &state.data_dir,
+                        &domain,
+                        &username,
+                        &vouch,
+                        now_unix(),
+                    )
+                    .is_err()
+                    {
+                        return text_error(500, "internal error");
+                    }
+                }
+            }
+
+            // Own relays keep the envelope for master-secret recovery;
+            // third-party relays are not given one. Optional, and unrelated to
+            // login either way.
+            if let Some(envelope) = &request.envelope
+                && let Ok(bytes) = serde_json::to_vec(envelope)
+                && let Ok(env) = cryptenv::Envelope::from_bytes(&bytes)
+            {
+                let _ = crate::auth_env::write_envelope(&state.data_dir, &domain, &username, &env);
+            }
+
+            let email = format!("{username}@{domain}");
+            state.dyn_accounts.insert(email.clone());
+            if let Ok(store) = jmapserver::Store::open(&acct_dir) {
+                let _ = store.put_mailboxes(&[crate::handler::default_inbox(&email)]);
+                state.accounts.insert(
+                    crate::handler::AccountStore {
+                        email: email.clone(),
+                        domain: domain.clone(),
+                        localpart: username.clone(),
+                        dir: acct_dir,
+                        store: Arc::new(store),
+                    },
+                    &[],
+                );
+            }
+
+            let mut out = serde_json::Map::new();
+            out.insert("email".into(), email.into());
+            // Present only when the client actually sent a DID.
+            //
+            // Unreachable as written: `validate` already refuses an empty DID
+            // with 400, so this is never false. Kept because the Go handler
+            // has the same dead branch and the shape is the contract — a
+            // client reading `did_bound` should not start depending on its
+            // always being there if the DID requirement is ever relaxed.
+            if !request.did.is_empty() {
+                out.insert(
+                    "did_bound".into(),
+                    crate::provision::did_bound(&state.cfg, &request).into(),
+                );
+            }
+            match jmap_types::go_json::to_vec(&serde_json::Value::Object(out)) {
+                Ok(body) => json_response(201, body),
+                Err(_) => text_error(500, "internal error"),
+            }
+        })();
+        set_route_cors(&mut res, "POST, OPTIONS", "Content-Type");
+        res
+    }
+
+    /// `POST /account/delete` — remove the caller's **own** account.
+    ///
+    /// The target comes only from the credential, so this can never touch
+    /// anyone else's. A statically configured account is refused: its data
+    /// would come back on the next start, since config.json still names it.
+    pub fn account_delete(state: &RelayState, req: &Request<()>) -> Response<Body> {
+        let mut res = (|| {
+            if req.method() != axum::http::Method::POST {
+                return method_not_allowed();
+            }
+            let Some((domain, localpart)) = authenticate(state, req) else {
+                return unauthorized();
+            };
+            let dom_cfg = state
+                .cfg
+                .domains
+                .get(&domain)
+                .cloned()
+                .or_else(|| state.dynamic_domains.get(&domain));
+            if let Err(e) = crate::customdomain::may_self_delete(dom_cfg.as_ref(), &localpart) {
+                return text_error(e.status(), e.message());
+            }
+
+            let email = format!("{localpart}@{domain}");
+            // Drop the routing first. An account whose data is gone but whose
+            // aliases still resolve would take delivery into a store nobody
+            // can reach.
+            state.accounts.remove(&email);
+            state.dyn_accounts.remove(&email);
+
+            let dir = crate::auth_env::account_dir(&state.data_dir, &domain, &localpart);
+            if std::fs::remove_dir_all(&dir).is_err() && dir.exists() {
+                return text_error(500, "failed to delete account data");
+            }
+            no_content()
+        })();
+        set_route_cors(&mut res, "POST, OPTIONS", "Authorization, Content-Type");
+        res
+    }
+
+    /// `POST /account/storage/purge-messages` — clear `messages/` and nothing
+    /// else. Every other file either holds a credential with no second copy or
+    /// is the account's only mailbox.
+    pub fn storage_purge(state: &RelayState, req: &Request<()>) -> Response<Body> {
+        let mut res = (|| {
+            if req.method() != axum::http::Method::POST {
+                return method_not_allowed();
+            }
+            let Some((domain, localpart)) = authenticate(state, req) else {
+                return unauthorized();
+            };
+            let email = format!("{localpart}@{domain}");
+            let purged = match state.accounts.get(&email) {
+                Some(account) => {
+                    let n = account.store.purge();
+                    state.hub.notify();
+                    n
+                }
+                None => 0,
+            };
+            match jmap_types::go_json::to_vec(&std::collections::BTreeMap::from([(
+                "purged", purged,
+            )])) {
+                Ok(body) => json_response(200, body),
+                Err(_) => text_error(500, "internal error"),
+            }
+        })();
+        set_route_cors(&mut res, "POST, OPTIONS", "Authorization, Content-Type");
         res
     }
 

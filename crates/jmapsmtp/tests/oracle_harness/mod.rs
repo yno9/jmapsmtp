@@ -83,9 +83,14 @@ pub fn free_port() -> u16 {
     for _ in 0..SPAN {
         let n = NEXT.fetch_add(1, Ordering::Relaxed) as u32;
         let port = (BASE + (pid_offset + n * 7) % SPAN) as u16;
-        // Still confirm it is actually free — another process on this machine
-        // may hold it — but never reuse one this process already handed out.
-        if std::net::TcpListener::bind(("127.0.0.1", port)).is_ok() {
+        // Probed on **0.0.0.0**, not 127.0.0.1.
+        //
+        // The oracle's SMTP listener binds `:<port>`, i.e. every interface. A
+        // loopback-only probe succeeds while another process holds the same
+        // port on all interfaces, so the port looked free and the oracle then
+        // died with `bind: address already in use`. Probing the wider bind is
+        // what makes the check as strong as the bind that follows.
+        if std::net::TcpListener::bind(("0.0.0.0", port)).is_ok() {
             return port;
         }
     }
@@ -342,6 +347,12 @@ pub fn raw_get(port: u16, target: &str) -> (u16, String, String) {
 /// A raw authenticated GET against any port.
 pub fn raw_get_auth(port: u16, target: &str, auth: &str) -> (u16, String) {
     let (status, body, _, _) = raw_request_full(port, "GET", target, None, Some(auth));
+    (status, body)
+}
+
+/// A raw POST against any port, with no credentials.
+pub fn raw_post(port: u16, target: &str, body: &str) -> (u16, String) {
+    let (status, body, _, _) = raw_request_full(port, "POST", target, Some(body), None);
     (status, body)
 }
 

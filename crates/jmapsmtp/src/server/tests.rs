@@ -376,12 +376,24 @@ fn query_values_are_percent_decoded() {
 ///
 /// A 404 or an empty 200 would let `just difftest` pass on a coincidence; 501
 /// makes every unwired route show up as a difference until it is wired.
-#[tokio::test]
-async fn unwired_routes_answer_501_rather_than_something_plausible() {
-    // `/account/provision` is still unwired. `tests/server_interop.rs` holds
-    // the authoritative list and compares each against the oracle; this only
-    // checks the shape of the answer.
-    let (status, body, _) = get(state(), "/account/provision").await;
-    assert_eq!(status, 501);
-    assert_eq!(body, "not implemented\n");
+/// An unwired route answers 501 — not 404, and not an empty 200 — so
+/// `server_interop` reports it as a difference rather than passing on a
+/// coincidence.
+///
+/// Deliberately does **not** name a route. Three earlier versions of this test
+/// hardcoded one and went stale the moment it was wired, each time failing for
+/// a reason that had nothing to do with what it was checking. The authoritative
+/// list lives in `tests/server_interop.rs`, where it is compared against the
+/// oracle; this only pins the shape of the answer.
+#[test]
+fn the_not_implemented_answer_is_a_501_with_a_plain_body() {
+    let res = text_error(501, "not implemented");
+    assert_eq!(res.status().as_u16(), 501);
+    assert_eq!(
+        res.headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok()),
+        Some("text/plain; charset=utf-8")
+    );
+    assert_ne!(res.status().as_u16(), 404, "never the mux's own 404");
 }

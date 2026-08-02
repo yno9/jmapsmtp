@@ -20,7 +20,10 @@ fn config_json(http_port: u16, smtp_port: u16) -> String {
         r##"{{"listen_addr":"127.0.0.1:{http_port}","smtp_port":{smtp_port},
             "base_url":"http://127.0.0.1:{http_port}","hostname":"t.invalid",
             "relay_label":"Biset","relay_color":"#123456",
-            "domain":{{"a.test":{{"account":{{"alice":{{}}}}}}}}}}"##
+            "domain":{{
+              "a.test":{{"account":{{"alice":{{}}}}}},
+              "open.test":{{"allow_provision":true}}
+            }}}}"##
     )
 }
 
@@ -469,6 +472,184 @@ fn the_jmap_session_and_api_agree() {
     ours.stop();
 }
 
+/// Provisioning, end to end, on both servers — with a genuine did:dht
+/// identity and a real vouch, since the whole flow turns on the signature.
+#[test]
+fn provisioning_creates_the_same_account_on_both_servers() {
+    use base64::Engine as _;
+    use ed25519_dalek::{Signer as _, SigningKey};
+
+    let Some((o, ours)) = both(seed_accounts) else {
+        return;
+    };
+
+    let make = |seed: u8, username: &str| {
+        let root = SigningKey::from_bytes(&[seed; 32]);
+        let did = format!(
+            "did:dht:{}",
+            jmapserver::diddht::zbase32_encode(&root.verifying_key().to_bytes())
+        );
+        let device = SigningKey::from_bytes(&[seed.wrapping_add(1); 32]);
+        let device_id = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(device.verifying_key().to_bytes());
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let sig = base64::engine::general_purpose::STANDARD.encode(
+            root.sign(
+                jmapserver::diddht::vouch_statement(&did, &device_id, "Laptop", ts).as_bytes(),
+            )
+            .to_bytes(),
+        );
+        serde_json::json!({
+            "username": username, "domain": "open.test", "did": did,
+            "did_sig": "c2ln", "bind_ts": ts,
+            "device_pub_key": device_id, "device_label": "Laptop",
+            "device_vouch_ts": ts, "device_vouch_sig": sig,
+        })
+        .to_string()
+    };
+
+    // Each server creates a different name, so neither collides with the
+    // other's — they share a data directory.
+    let (go_status, go_body) = o.post_json("/account/provision", &make(31, "viaoracle"));
+    assert_eq!(go_status, 201, "{go_body}");
+    let (our_status, our_body) =
+        oracle_harness::raw_post(ours.port, "/account/provision", &make(41, "viaport"));
+    assert_eq!(our_status, 201, "{our_body}");
+
+    let go: serde_json::Value = serde_json::from_str(&go_body).unwrap();
+    let mine: serde_json::Value = serde_json::from_str(&our_body).unwrap();
+    assert_eq!(go["email"], "viaoracle@open.test");
+    assert_eq!(mine["email"], "viaport@open.test");
+    assert_eq!(
+        mine["did_bound"], go["did_bound"],
+        "neither relay has an anchor, so neither binds"
+    );
+
+    // Both accounts are on disk in the same shape: a device key and no static
+    // credential.
+    for lp in ["viaoracle", "viaport"] {
+        let acct = o.data_dir().join("open.test").join(lp);
+        assert_eq!(
+            jmapserver::devicekeys::list_device_keys(&acct).len(),
+            1,
+            "{lp}: the device key is the credential"
+        );
+        assert!(
+            !acct.join("auth_token_hash").exists(),
+            "{lp}: this flow writes no static credential"
+        );
+    }
+
+    // …and each refuses the other's name, from either server.
+    let (status, _) = o.post_json("/account/provision", &make(51, "viaport"));
+    assert_eq!(status, 409, "the oracle sees the account this port created");
+    let (status, _) =
+        oracle_harness::raw_post(ours.port, "/account/provision", &make(61, "viaoracle"));
+    assert_eq!(status, 409, "and this port sees the oracle's");
+
+    ours.stop();
+}
+
+/// The refusals, compared. Each is reachable without a credential, so each is
+/// something anyone on the internet can learn.
+#[test]
+fn provisioning_refuses_identically() {
+    let Some((o, ours)) = both(seed_accounts) else {
+        return;
+    };
+    let body = |v: serde_json::Value| v.to_string();
+
+    for (name, req) in [
+        ("no fields at all", body(serde_json::json!({}))),
+        (
+            "a bad username",
+            body(
+                serde_json::json!({"username": "Bad Name", "did": "did:dht:x",
+                                    "device_pub_key": "k", "device_vouch_sig": "s"}),
+            ),
+        ),
+        (
+            "no did",
+            body(
+                serde_json::json!({"username": "carol", "device_pub_key": "k",
+                                    "device_vouch_sig": "s"}),
+            ),
+        ),
+        (
+            "an unknown domain",
+            body(
+                serde_json::json!({"username": "carol", "domain": "nope.test",
+                                    "did": "did:dht:x", "device_pub_key": "k",
+                                    "device_vouch_sig": "s"}),
+            ),
+        ),
+        (
+            // On the OPEN domain, so it reaches the vouch path rather than
+            // being refused on the domain gate first. That is what makes this
+            // case about the DID method at all.
+            "a did:webvh with no anchor",
+            body(serde_json::json!({
+                "username": "carol", "domain": "open.test",
+                "did": "did:webvh:QmSCID111111111111111111111111111111111111111:biset.md:dids:c",
+                "device_pub_key": "k", "device_vouch_sig": "s"})),
+        ),
+        (
+            // Well-formed all the way through, with a signature that is real
+            // ed25519 over the WRONG statement. Nothing before the vouch check
+            // rejects it, so this is the only case that exercises the check.
+            "a did:dht vouch signed for a different label",
+            {
+                use base64::Engine as _;
+                use ed25519_dalek::{Signer as _, SigningKey};
+                let root = SigningKey::from_bytes(&[71u8; 32]);
+                let did = format!(
+                    "did:dht:{}",
+                    jmapserver::diddht::zbase32_encode(&root.verifying_key().to_bytes())
+                );
+                let device = SigningKey::from_bytes(&[72u8; 32]);
+                let device_id = base64::engine::general_purpose::URL_SAFE_NO_PAD
+                    .encode(device.verifying_key().to_bytes());
+                let ts = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs() as i64;
+                let sig = base64::engine::general_purpose::STANDARD.encode(
+                    root.sign(
+                        jmapserver::diddht::vouch_statement(&did, &device_id, "Laptop", ts)
+                            .as_bytes(),
+                    )
+                    .to_bytes(),
+                );
+                body(serde_json::json!({
+                    "username": "dave", "domain": "open.test", "did": did,
+                    "did_sig": "c2ln", "bind_ts": ts,
+                    "device_pub_key": device_id,
+                    // The vouch was signed for "Laptop".
+                    "device_label": "Attacker's box",
+                    "device_vouch_ts": ts, "device_vouch_sig": sig}))
+            },
+        ),
+    ] {
+        let (go_status, go_body) = o.post_json("/account/provision", &req);
+        let (our_status, our_body) =
+            oracle_harness::raw_post(ours.port, "/account/provision", &req);
+        assert_eq!(our_status, go_status, "{name}: oracle said {go_body:?}");
+        assert_eq!(our_body, go_body, "{name}");
+    }
+
+    // None of them left an account behind on either side.
+    for lp in ["carol", "dave"] {
+        assert!(
+            !o.data_dir().join("open.test").join(lp).exists(),
+            "{lp}: a refused provision must create nothing"
+        );
+    }
+    ours.stop();
+}
+
 // ── what is not wired ─────────────────────────────────────────────────────
 
 /// The routes still to be wired answer 501 here and something else on the
@@ -485,8 +666,6 @@ fn the_unwired_routes_are_the_ones_named_here() {
         "/jmap/push/vapid-public-key",
         "/jmap/push/subscribe",
         "/jmap/push/unsubscribe",
-        "/account/provision",
-        "/account/delete",
         "/admin/dashboard",
     ];
 
@@ -503,10 +682,6 @@ fn the_unwired_routes_are_the_ones_named_here() {
             "{target}: the oracle serves it, so this is real work remaining"
         );
     }
-
-    // /account/storage/purge-messages needs the in-memory Store, which is
-    // step 11 of the startup sequence and not assembled yet.
-    assert_eq!(ours.get("/account/storage/purge-messages").0, 501);
 
     // The bearer routes are a different state: the **guard** is wired and the
     // body is not, so they answer 401 rather than 501 — and they answer 401
