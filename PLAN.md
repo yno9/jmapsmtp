@@ -517,7 +517,9 @@ HTTP 層（axum ルータ・CORS・SSE）と全体 difftest は **M6 に繰り�
 
 | M6v | 管理ダッシュボードと Prometheus メトリクス | `98722e6` |
 
-残り: **M6w** — `/domain/*` `/jmap/eventsource/` `/jmap/push/*`、
+| M6w | カスタムドメインと DNS クライアント（`dns`） | `b89daf1` |
+
+残り: **M6x** — `/jmap/eventsource/` `/jmap/push/*`、
 および SPEC §2 のステップ 13/14（maintenance、SMTP リスナ）。
 `server_interop` の `the_unwired_routes_are_the_ones_named_here` が
 残作業を名前で列挙している。
