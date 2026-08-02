@@ -523,8 +523,11 @@ HTTP 層（axum ルータ・CORS・SSE）と全体 difftest は **M6 に繰り�
 
 **oracle が提供する全ルートの配線が完了した。**
 
-残り: **M6y** — SPEC §2 のステップ 13/14（maintenance、SMTP リスナ）と、
-送信パイプラインの配線（`OnSubmitEmail` フックから `smtp_out` へ）。
+| M6y | 受信配送・SMTP リスナ・非活動掃除（`delivery` / `maintenance`） | `a018e61` |
+
+残り: **M6z** — 送信サブミッションの配線
+（`OnSubmitEmail` フックから `smtp_out` へ）、受信 STARTTLS、anchor クライアント。
+`main.rs` の `NOT_YET_WIRED` が同じ 3 つを列挙している。
 `server_interop` の `the_unwired_routes_are_the_ones_named_here` が
 残作業を名前で列挙している。
 併せて SPEC §2 のステップ 8/9/11/13/14（handler と Store、maintenance、SMTP）。
