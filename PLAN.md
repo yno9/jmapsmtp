@@ -519,8 +519,12 @@ HTTP 層（axum ルータ・CORS・SSE）と全体 difftest は **M6 に繰り�
 
 | M6w | カスタムドメインと DNS クライアント（`dns`） | `b89daf1` |
 
-残り: **M6x** — `/jmap/eventsource/` `/jmap/push/*`、
-および SPEC §2 のステップ 13/14（maintenance、SMTP リスナ）。
+| M6x | Web Push と event-source（`jmapserver::push`） | `fa30892` |
+
+**oracle が提供する全ルートの配線が完了した。**
+
+残り: **M6y** — SPEC §2 のステップ 13/14（maintenance、SMTP リスナ）と、
+送信パイプラインの配線（`OnSubmitEmail` フックから `smtp_out` へ）。
 `server_interop` の `the_unwired_routes_are_the_ones_named_here` が
 残作業を名前で列挙している。
 併せて SPEC §2 のステップ 8/9/11/13/14（handler と Store、maintenance、SMTP）。
