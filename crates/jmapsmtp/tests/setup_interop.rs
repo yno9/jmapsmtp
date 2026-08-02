@@ -103,6 +103,71 @@ fn relay_info_names_the_provisioning_domain_when_there_is_one() {
     );
 }
 
+// ── the /setup page ───────────────────────────────────────────────────────
+
+/// The page is a frozen cryptographic artifact: its embedded JavaScript builds
+/// the envelope the account logs in with, using the same Argon2id parameters
+/// and HKDF info as `cryptenv`. A byte difference here is a released client
+/// changing, so it is compared as bytes.
+#[test]
+fn the_setup_page_is_byte_identical_to_the_oracles() {
+    let Some(o) = oracle() else { return };
+    let token = token_for(&o, "alice");
+
+    let (status, body, _) = o.get(&format!("/setup?token={token}"));
+    assert_eq!(status, 200, "{body:.200}");
+
+    assert_eq!(
+        jmapsmtp::setup_page::render("alice", "a.test", &token),
+        body,
+        "the served page differs from this port's"
+    );
+
+    // …and it really is the page that does the crypto, not an empty shell.
+    assert!(body.contains("argon2id"), "the page carries its KDF");
+    assert!(body.contains("biset-jmapsmtp/auth/v1"), "and its HKDF info");
+    assert!(body.contains(&token), "and the token it was rendered for");
+}
+
+/// The token is checked **before** the method, so a POST with a valid token is
+/// 405 while a POST with a bad one is 401. Worth pinning: the order decides
+/// whether a wrong-method request can be used to test tokens.
+#[test]
+fn the_setup_page_checks_the_token_before_the_method() {
+    let Some(o) = oracle() else { return };
+    let token = token_for(&o, "bob");
+
+    let (status, _) = o.post_json(&format!("/setup?token={token}"), "");
+    assert_eq!(status, 405, "a valid token, a wrong method");
+
+    let (status, _) = o.post_json("/setup?token=not-a-real-token", "");
+    assert_eq!(
+        status, 401,
+        "a bad token is refused before the method matters"
+    );
+
+    let (status, body, _) = o.get("/setup");
+    assert_eq!(status, 400);
+    assert_eq!(SetupError::TokenRequired.message(), body.trim());
+}
+
+/// A token that was already consumed no longer renders a page — the same
+/// one-shot rule `/auth/signup` enforces.
+#[test]
+fn a_consumed_token_no_longer_opens_the_setup_page() {
+    let Some(o) = oracle() else { return };
+    let token = token_for(&o, "alice");
+    assert_eq!(o.get(&format!("/setup?token={token}")).0, 200);
+
+    o.post_json(
+        &format!("/auth/signup?token={token}"),
+        &String::from_utf8(envelope_bytes()).unwrap(),
+    );
+
+    let (status, _, _) = o.get(&format!("/setup?token={token}"));
+    assert_eq!(status, SetupError::InvalidToken.status());
+}
+
 // ── GET /auth/envelope ────────────────────────────────────────────────────
 
 #[test]

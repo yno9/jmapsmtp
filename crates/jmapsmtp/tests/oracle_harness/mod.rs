@@ -55,12 +55,41 @@ pub fn oracle_binary(required_var: &str) -> Option<PathBuf> {
 
 /// A free TCP port. The oracle binds both an HTTP and an SMTP listener and
 /// `log.Fatal`s if either fails, so neither can be left to a default.
+///
+/// # Why this is not `bind("127.0.0.1:0")`
+///
+/// Asking the OS for an ephemeral port means binding, reading the port, and
+/// dropping the listener before the oracle can bind it. Under `cargo test`'s
+/// parallelism two tests hit that window at once and the OS hands them the
+/// **same** port — so one oracle wins and the other test silently talks to it,
+/// asking a relay that never saw its seed for a token it does not have.
+///
+/// That is exactly what happened: the whole file passed with
+/// `--test-threads=1` and failed one test in parallel, with a 401 that looked
+/// like a token bug.
+///
+/// Ports are handed out from a counter instead. The counter makes two threads
+/// in this process never pick the same one, and seeding it from the process id
+/// keeps two test binaries running concurrently in different ranges.
 pub fn free_port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
+    use std::sync::atomic::{AtomicU16, Ordering};
+    static NEXT: AtomicU16 = AtomicU16::new(0);
+
+    // 20000..60000, offset per process so concurrent binaries do not overlap.
+    const BASE: u32 = 20_000;
+    const SPAN: u32 = 40_000;
+    let pid_offset = (std::process::id() as u32).wrapping_mul(97) % SPAN;
+
+    for _ in 0..SPAN {
+        let n = NEXT.fetch_add(1, Ordering::Relaxed) as u32;
+        let port = (BASE + (pid_offset + n * 7) % SPAN) as u16;
+        // Still confirm it is actually free — another process on this machine
+        // may hold it — but never reuse one this process already handed out.
+        if std::net::TcpListener::bind(("127.0.0.1", port)).is_ok() {
+            return port;
+        }
+    }
+    panic!("no free port found");
 }
 
 impl Oracle {
@@ -220,6 +249,7 @@ impl Oracle {
             .unwrap_or_else(|| panic!("unparseable status line {line:?}"));
 
         let mut location = String::new();
+        let mut chunked = false;
         loop {
             let mut h = String::new();
             r.read_line(&mut h).unwrap();
@@ -230,15 +260,58 @@ impl Oracle {
             if let Some(v) = h.strip_prefix("Location: ") {
                 location = v.to_string();
             }
+            if h.eq_ignore_ascii_case("transfer-encoding: chunked") {
+                chunked = true;
+            }
         }
-        let mut body = Vec::new();
-        let _ = r.read_to_end(&mut body);
+
+        // Go switches to chunked once a response outgrows its write buffer, so
+        // whether a body arrives framed depends on its size — small ones did
+        // not, which is why this went unnoticed until the /setup page. Decoding
+        // here means a large body is compared as its content rather than as
+        // `ea7\r\n<content>\r\n0\r\n\r\n`.
+        let body = if chunked {
+            read_chunked(&mut r)
+        } else {
+            let mut body = Vec::new();
+            let _ = r.read_to_end(&mut body);
+            body
+        };
         (
             status,
             String::from_utf8_lossy(&body).into_owned(),
             location,
         )
     }
+}
+
+/// RFC 9112 chunked bodies: `<hex size>\r\n<bytes>\r\n` until a zero-sized
+/// chunk. Trailers, if any, are discarded — nothing here sends them.
+fn read_chunked(r: &mut BufReader<TcpStream>) -> Vec<u8> {
+    let mut out = Vec::new();
+    loop {
+        let mut size_line = String::new();
+        if r.read_line(&mut size_line).is_err() {
+            break;
+        }
+        // A chunk extension after `;` is legal and ignored.
+        let size_hex = size_line.trim().split(';').next().unwrap_or("").to_string();
+        let Ok(size) = usize::from_str_radix(&size_hex, 16) else {
+            break;
+        };
+        if size == 0 {
+            break;
+        }
+        let mut chunk = vec![0u8; size];
+        if r.read_exact(&mut chunk).is_err() {
+            break;
+        }
+        out.extend_from_slice(&chunk);
+        // The CRLF that terminates the chunk.
+        let mut crlf = [0u8; 2];
+        let _ = r.read_exact(&mut crlf);
+    }
+    out
 }
 
 impl Drop for Oracle {
