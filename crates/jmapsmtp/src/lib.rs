@@ -25,6 +25,7 @@ pub mod gomux;
 pub mod handler;
 pub mod hooks;
 pub mod maintenance;
+pub mod outbound;
 pub mod pgp;
 pub mod provision;
 pub mod routes;
@@ -34,6 +35,7 @@ pub mod setup_page;
 pub mod smtp_in;
 pub mod smtp_out;
 pub mod startup;
+pub mod submit;
 pub mod wkd;
 
 /// Write a file only its owner can read.

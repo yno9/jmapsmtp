@@ -55,6 +55,8 @@ pub struct RelayState {
     /// network — the alternative is a route whose only test is "does the
     /// internet agree".
     pub txt: Arc<dyn crate::dns::TxtResolver>,
+    /// Resolves mail exchangers for outbound delivery.
+    pub mx: Arc<dyn crate::smtp_out::MxResolver>,
     /// Outbound SMTP attempts, by result. Counters, so they only ever rise.
     smtp_sent: std::sync::atomic::AtomicU64,
     smtp_failed: std::sync::atomic::AtomicU64,
@@ -88,6 +90,7 @@ impl RelayState {
             push: parking_lot::RwLock::new(jmapserver::push::PushRegistry::default()),
             vapid: jmapserver::push::Vapid::new(&cfg_vapid.0, &cfg_vapid.1, &cfg_vapid.2),
             txt: Arc::new(NoDns),
+            mx: Arc::new(NoDns),
             smtp_sent: std::sync::atomic::AtomicU64::new(0),
             smtp_failed: std::sync::atomic::AtomicU64::new(0),
             mux,
@@ -100,8 +103,11 @@ impl RelayState {
     /// An account whose store cannot be opened is **fatal**, not skipped:
     /// carrying on would serve a relay that silently drops one account's mail
     /// while looking healthy.
-    pub fn open_stores(&self) -> Result<(), String> {
+    pub fn open_stores(self: &Arc<Self>) -> Result<(), String> {
         let aliases = crate::startup::build_alias_map(&self.cfg);
+        // Hooks are installed after every store exists, because a hook holds
+        // an Arc back to this state and the accounts it may consult.
+        let mut pending_hooks: Vec<String> = Vec::new();
         for (domain, dom_cfg) in &self.cfg.domains {
             for localpart in dom_cfg.accounts.keys() {
                 let localpart = localpart.to_lowercase();
@@ -129,6 +135,12 @@ impl RelayState {
                     },
                     &mine,
                 );
+                pending_hooks.push(primary);
+            }
+        }
+        for primary in pending_hooks {
+            if let Some(account) = self.accounts.get(&primary) {
+                crate::submit::install_hooks(self, &account);
             }
         }
         Ok(())
@@ -181,7 +193,9 @@ impl RelayState {
     /// Install the live DNS client. Must be called from inside a runtime.
     pub fn with_dns(self: &mut Arc<RelayState>) {
         if let Some(state) = Arc::get_mut(self) {
-            state.txt = crate::dns::SystemDns::new();
+            let dns = crate::dns::SystemDns::new();
+            state.txt = dns.clone();
+            state.mx = dns;
         }
     }
 
@@ -214,6 +228,14 @@ struct NoDns;
 
 impl crate::dns::TxtResolver for NoDns {
     fn lookup_txt(&self, _name: &str) -> Vec<String> {
+        Vec::new()
+    }
+}
+
+impl crate::smtp_out::MxResolver for NoDns {
+    /// No exchangers, so every direct send fails rather than going somewhere
+    /// unintended. A relay host, if configured, bypasses this entirely.
+    fn lookup_mx(&self, _domain: &str) -> Vec<String> {
         Vec::new()
     }
 }
