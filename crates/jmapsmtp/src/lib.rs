@@ -9,6 +9,7 @@ pub mod auth_env;
 pub mod autocrypt;
 pub mod bearer;
 pub mod config;
+pub mod customdomain;
 pub mod devices;
 pub mod dkim;
 pub mod gomux;
