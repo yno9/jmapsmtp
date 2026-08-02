@@ -46,6 +46,9 @@ pub struct RelayState {
     pub metrics_token: String,
     /// Broadcasts state changes to event-source subscribers.
     pub hub: Arc<jmapserver::Hub>,
+    /// Outbound SMTP attempts, by result. Counters, so they only ever rise.
+    smtp_sent: std::sync::atomic::AtomicU64,
+    smtp_failed: std::sync::atomic::AtomicU64,
     mux: GoMux<RouteSpec>,
 }
 
@@ -68,6 +71,8 @@ impl RelayState {
             admin_token: crate::bearer::token_from_env("ADMIN_TOKEN"),
             metrics_token: crate::bearer::token_from_env("METRICS_TOKEN"),
             hub: Arc::new(jmapserver::Hub::new()),
+            smtp_sent: std::sync::atomic::AtomicU64::new(0),
+            smtp_failed: std::sync::atomic::AtomicU64::new(0),
             mux,
         })
     }
@@ -146,6 +151,25 @@ impl RelayState {
 
     pub fn patterns(&self) -> Vec<&str> {
         self.mux.patterns()
+    }
+
+    /// Record the outcome of one outbound send.
+    pub fn record_smtp_outbound(&self, sent: bool) {
+        use std::sync::atomic::Ordering;
+        if sent {
+            self.smtp_sent.fetch_add(1, Ordering::Relaxed);
+        } else {
+            self.smtp_failed.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// `(sent, failed)`.
+    pub fn smtp_outbound(&self) -> (u64, u64) {
+        use std::sync::atomic::Ordering;
+        (
+            self.smtp_sent.load(Ordering::Relaxed),
+            self.smtp_failed.load(Ordering::Relaxed),
+        )
     }
 }
 
@@ -433,6 +457,8 @@ async fn dispatch(
         "/account/provision" => handlers::account_provision(&state, &req, &body),
         "/account/delete" => handlers::account_delete(&state, &req),
         "/account/storage/purge-messages" => handlers::storage_purge(&state, &req),
+        "/admin/dashboard" => handlers::admin_dashboard(),
+        "/metrics" => handlers::metrics(&state),
         _ => text_error(501, "not implemented"),
     }
 }
@@ -1237,6 +1263,40 @@ mod handlers {
             }
         })();
         set_route_cors(&mut res, "POST, OPTIONS", "Authorization, Content-Type");
+        res
+    }
+
+    // ── the dashboard and metrics ─────────────────────────────────────────
+
+    /// The static shell. No token: every call it makes carries one, so the
+    /// page itself holds no account data.
+    pub fn admin_dashboard() -> Response<Body> {
+        let mut res = Response::new(Body::from(jmapserver::admin::DASHBOARD_HTML));
+        res.headers_mut().insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("text/html; charset=utf-8"),
+        );
+        res
+    }
+
+    /// Prometheus exposition.
+    ///
+    /// Only this relay's own metrics. The Go build also registers the Go
+    /// runtime and process collectors, which describe the *Go* process and
+    /// have no counterpart here — emitting lookalikes would be inventing
+    /// numbers. An operator scraping both sees fewer series after a
+    /// migration, not different ones.
+    pub fn metrics(state: &RelayState) -> Response<Body> {
+        let mut metrics =
+            jmapserver::admin::collect(&state.data_dir, &state.cfg.relay_label, crate::VERSION);
+        let (sent, failed) = state.smtp_outbound();
+        metrics.extend(jmapserver::admin::smtp_outbound_metrics(sent, failed));
+
+        let mut res = Response::new(Body::from(jmapserver::admin::render_prometheus(&metrics)));
+        res.headers_mut().insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("text/plain; version=0.0.4; charset=utf-8"),
+        );
         res
     }
 

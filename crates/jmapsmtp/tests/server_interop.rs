@@ -650,6 +650,89 @@ fn provisioning_refuses_identically() {
     ours.stop();
 }
 
+/// The dashboard shell, byte for byte. It is a released client and the JSON it
+/// fetches is this port's output, so it is carried over rather than rewritten.
+#[test]
+fn the_admin_dashboard_is_byte_identical() {
+    let Some((o, ours)) = both(seed_accounts) else {
+        return;
+    };
+    let (status, body, _) = compare(&o, &ours, "/admin/dashboard");
+    assert_eq!(status, 200);
+    assert!(body.len() > 1000, "the real page, not a stub");
+    assert!(
+        !body.contains("alice@a.test"),
+        "the shell embeds no account data: it is served without a token"
+    );
+    ours.stop();
+}
+
+/// The relay's own metric series, compared line by line.
+///
+/// **Not the whole scrape.** The Go build also registers the Go runtime and
+/// process collectors, which describe the Go process and have no counterpart
+/// here. The `biset_*` series are the ones this relay defines, and they are
+/// the contract.
+#[test]
+fn every_biset_metric_series_matches() {
+    let Some((o, ours)) = both(seed_accounts) else {
+        return;
+    };
+    let (status, go_body, _) = o.get("/metrics");
+    assert_eq!(status, 200);
+
+    // This port closes /metrics with no token (§11.13), so its own scrape is
+    // read through the renderer with the same inputs.
+    // The **raw** configured label, not the `Mail` default `relay_label()`
+    // applies elsewhere: the metric reports what the operator set, and an
+    // empty one stays empty.
+    let cfg: Config = serde_json::from_str(&config_json(o.http_port, 1)).unwrap();
+    let mut mine = jmapserver::admin::collect(&o.data_dir(), &cfg.relay_label, "dev");
+    mine.extend(jmapserver::admin::smtp_outbound_metrics(0, 0));
+    let our_body = jmapserver::admin::render_prometheus(&mine);
+
+    let biset_series = |text: &str| -> std::collections::BTreeSet<String> {
+        text.lines()
+            .filter(|l| l.starts_with("biset_"))
+            .map(str::to_string)
+            .collect()
+    };
+    assert_eq!(
+        biset_series(&our_body),
+        biset_series(&go_body),
+        "the relay's own series"
+    );
+
+    // The HELP and TYPE lines too — a counter graphed as a gauge is wrong.
+    for name in [
+        "biset_build_info",
+        "biset_data_disk_bytes",
+        "biset_smtp_outbound_total",
+        "biset_accounts",
+    ] {
+        for kind in ["# HELP", "# TYPE"] {
+            let go_line = go_body
+                .lines()
+                .find(|l| l.starts_with(&format!("{kind} {name} ")))
+                .unwrap_or_else(|| panic!("the oracle should declare {kind} {name}"));
+            assert!(
+                our_body.lines().any(|l| l == go_line),
+                "{kind} {name}: this port sent something else\n  oracle: {go_line}"
+            );
+        }
+    }
+
+    // The §11.16 divergence — the oracle counting `peers` and the registry —
+    // needs a seed that has them, and is asserted in `admin_interop`. This
+    // seed deliberately has neither, so every account series matches here and
+    // the comparison above is not filtered.
+    assert!(
+        go_body.contains(r#"biset_accounts{domain="open.test"} 0"#),
+        "a domain with no accounts still reports zero: {go_body}"
+    );
+    ours.stop();
+}
+
 // ── what is not wired ─────────────────────────────────────────────────────
 
 /// The routes still to be wired answer 501 here and something else on the
@@ -666,7 +749,6 @@ fn the_unwired_routes_are_the_ones_named_here() {
         "/jmap/push/vapid-public-key",
         "/jmap/push/subscribe",
         "/jmap/push/unsubscribe",
-        "/admin/dashboard",
     ];
 
     for target in unwired {
@@ -687,6 +769,9 @@ fn the_unwired_routes_are_the_ones_named_here() {
     // body is not, so they answer 401 rather than 501 — and they answer 401
     // with no token configured, which is the deliberate divergence in
     // SPEC.md §11.13. The oracle serves them wide open.
+    // The dashboard shell is wired and public on both sides.
+    assert_eq!(ours.get("/admin/dashboard").0, 200);
+
     for target in ["/metrics", "/admin/accounts"] {
         assert_eq!(ours.get(target).0, 401, "{target}: this port closes it");
         assert_eq!(

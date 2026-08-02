@@ -144,7 +144,11 @@ fn the_account_metric_agrees_with_the_account_listing() {
         .iter()
         .filter(|m| m.name == "biset_accounts")
         .collect();
-    assert_eq!(accounts.len(), 1, "one domain has accounts: {accounts:?}");
+    assert_eq!(
+        accounts.len(),
+        1,
+        "one domain directory exists: {accounts:?}"
+    );
     assert_eq!(
         accounts[0].labels,
         [("domain".to_string(), "a.test".to_string())]
@@ -198,6 +202,111 @@ fn the_disk_metric_covers_everything_under_the_data_directory() {
         "strictly more than one account's usage"
     );
     assert!(disk.labels.is_empty());
+}
+
+// ── the exposition format ─────────────────────────────────────────────────
+
+/// One HELP and one TYPE per metric **name**, then every series. A repeated
+/// HELP for the same name is a parse error for some scrapers, so the two
+/// `biset_smtp_outbound_total` series have to share one header.
+#[test]
+fn series_sharing_a_name_share_one_header() {
+    let text = render_prometheus(&smtp_outbound_metrics(3, 1));
+    assert_eq!(
+        text,
+        "# HELP biset_smtp_outbound_total Outbound SMTP send attempts, by result.\n\
+         # TYPE biset_smtp_outbound_total counter\n\
+         biset_smtp_outbound_total{result=\"failed\"} 1\n\
+         biset_smtp_outbound_total{result=\"sent\"} 3\n"
+    );
+    assert_eq!(text.matches("# HELP").count(), 1);
+}
+
+/// Both series exist at zero. A counter that only appears after its first
+/// event makes `rate()` undefined until then, and an alert on "no sends
+/// succeeded" cannot fire on a series that is not there.
+#[test]
+fn the_smtp_counters_are_present_before_anything_has_happened() {
+    let text = render_prometheus(&smtp_outbound_metrics(0, 0));
+    assert!(
+        text.contains(r#"biset_smtp_outbound_total{result="sent"} 0"#),
+        "{text}"
+    );
+    assert!(
+        text.contains(r#"biset_smtp_outbound_total{result="failed"} 0"#),
+        "{text}"
+    );
+}
+
+/// `gauge` and `counter` are not interchangeable: a client graphing a counter
+/// as a gauge draws the wrong shape.
+#[test]
+fn the_metric_types_are_reported() {
+    let text = render_prometheus(&collect(&tempfile::tempdir().unwrap().keep(), "R", "v"));
+    assert!(text.contains("# TYPE biset_build_info gauge"), "{text}");
+    assert!(
+        text.contains("# TYPE biset_data_disk_bytes gauge"),
+        "{text}"
+    );
+    assert!(
+        render_prometheus(&smtp_outbound_metrics(0, 0))
+            .contains("# TYPE biset_smtp_outbound_total counter")
+    );
+}
+
+#[test]
+fn a_metric_with_no_labels_has_no_braces() {
+    let text = render_prometheus(&collect(&tempfile::tempdir().unwrap().keep(), "R", "v"));
+    assert!(
+        text.lines()
+            .any(|l| l.starts_with("biset_data_disk_bytes ")),
+        "{text}"
+    );
+}
+
+/// A label value cannot contain a bare quote, backslash or newline — one
+/// unescaped quote corrupts every line after it. No domain contains them
+/// today, but a label value is not always a domain.
+#[test]
+fn label_values_are_escaped() {
+    let text = render_prometheus(&[Metric {
+        name: "biset_accounts",
+        help: "h",
+        kind: "gauge",
+        labels: vec![("domain".into(), "we\"ird\\x".into())],
+        value: 1,
+    }]);
+    assert!(
+        text.contains(r#"domain="we\"ird\\x""#),
+        "quote and backslash escaped: {text}"
+    );
+}
+
+/// A domain with no accounts still gets a series, at zero. Omitting it would
+/// make "this domain dropped to zero" indistinguishable from the relay being
+/// down — the series just disappears.
+#[test]
+fn a_domain_with_no_accounts_reports_zero_rather_than_vanishing() {
+    let tmp = relay();
+    std::fs::create_dir_all(tmp.path().join("empty.test")).unwrap();
+
+    let metrics = collect(tmp.path(), "R", "v");
+    let empty = metrics
+        .iter()
+        .find(|m| {
+            m.labels
+                .contains(&("domain".to_string(), "empty.test".to_string()))
+        })
+        .expect("a series for the empty domain");
+    assert_eq!(empty.value, 0);
+
+    // …and the registry still is not a domain.
+    assert!(
+        !metrics.iter().any(|m| m
+            .labels
+            .contains(&("domain".to_string(), "_domains".to_string()))),
+        "the registry is not a domain, even as a zero"
+    );
 }
 
 #[test]

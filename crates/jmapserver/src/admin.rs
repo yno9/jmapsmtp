@@ -178,13 +178,72 @@ pub fn usage_breakdown(data_dir: &Path, domain: &str, localpart: &str) -> Vec<(S
 
 // ── metrics ───────────────────────────────────────────────────────────────
 
-/// A metric this relay exports, in Prometheus text form.
+/// A metric this relay exports.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Metric {
     pub name: &'static str,
     pub help: &'static str,
+    /// `gauge` or `counter`. Part of the exposition, and a client that graphs
+    /// a counter as a gauge draws the wrong shape.
+    pub kind: &'static str,
     pub labels: Vec<(String, String)>,
     pub value: u64,
+}
+
+/// Render metrics in the Prometheus text exposition format.
+///
+/// One `# HELP` and one `# TYPE` per metric **name**, then every series — a
+/// repeated HELP for the same name is a parse error for some scrapers, so
+/// series sharing a name have to be emitted together.
+///
+/// Label values are escaped as the format requires (`\`, `"`, newline). A
+/// domain cannot contain any of them today, but a label value is not always a
+/// domain and an unescaped quote would corrupt every line after it.
+pub fn render_prometheus(metrics: &[Metric]) -> String {
+    let mut out = String::new();
+    let mut seen: Vec<&str> = Vec::new();
+    // Grouped by name, preserving first-appearance order.
+    let mut names: Vec<&str> = Vec::new();
+    for m in metrics {
+        if !names.contains(&m.name) {
+            names.push(m.name);
+        }
+    }
+    for name in names {
+        for m in metrics.iter().filter(|m| m.name == name) {
+            if !seen.contains(&name) {
+                out.push_str(&format!("# HELP {} {}\n", m.name, m.help));
+                out.push_str(&format!("# TYPE {} {}\n", m.name, m.kind));
+                seen.push(name);
+            }
+            out.push_str(m.name);
+            if !m.labels.is_empty() {
+                let rendered: Vec<String> = m
+                    .labels
+                    .iter()
+                    .map(|(k, v)| format!("{k}=\"{}\"", escape_label(v)))
+                    .collect();
+                out.push('{');
+                out.push_str(&rendered.join(","));
+                out.push('}');
+            }
+            out.push_str(&format!(" {}\n", m.value));
+        }
+    }
+    out
+}
+
+fn escape_label(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for c in value.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 /// The relay's own metrics, computed from the data directory at scrape time.
@@ -198,6 +257,7 @@ pub fn collect(data_dir: &Path, relay_label: &str, version: &str) -> Vec<Metric>
     let mut out = vec![Metric {
         name: "biset_build_info",
         help: "Build and relay information; the metric value is always 1.",
+        kind: "gauge",
         labels: vec![
             ("relay".into(), relay_label.to_string()),
             ("version".into(), version.to_string()),
@@ -205,7 +265,23 @@ pub fn collect(data_dir: &Path, relay_label: &str, version: &str) -> Vec<Metric>
         value: 1,
     }];
 
+    // Every domain directory gets a series, **including one with no accounts**.
+    // Omitting a zero would make "this domain dropped to zero accounts"
+    // invisible to a scraper — the series simply disappears, which alerting
+    // cannot distinguish from the relay being down.
     let mut per_domain: std::collections::BTreeMap<String, u64> = Default::default();
+    if let Ok(entries) = std::fs::read_dir(data_dir) {
+        for entry in entries.flatten() {
+            if !entry.path().is_dir() {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if NOT_DOMAINS.contains(&name.as_str()) {
+                continue;
+            }
+            per_domain.entry(name).or_default();
+        }
+    }
     for account in list_provisioned(data_dir) {
         *per_domain.entry(account.domain).or_default() += 1;
     }
@@ -213,6 +289,7 @@ pub fn collect(data_dir: &Path, relay_label: &str, version: &str) -> Vec<Metric>
         out.push(Metric {
             name: "biset_accounts",
             help: "Number of provisioned accounts, by domain.",
+            kind: "gauge",
             labels: vec![("domain".into(), domain)],
             value: count,
         });
@@ -221,11 +298,46 @@ pub fn collect(data_dir: &Path, relay_label: &str, version: &str) -> Vec<Metric>
     out.push(Metric {
         name: "biset_data_disk_bytes",
         help: "Total size of the data directory tree in bytes.",
+        kind: "gauge",
         labels: Vec::new(),
         value: dir_bytes(data_dir),
     });
     out
 }
+
+/// The relay's SMTP counters.
+///
+/// Both label series are emitted **even at zero**, matching
+/// `relayCollectors`' pre-initialisation. A counter that only appears after its
+/// first event makes `rate()` undefined until then, and an alert on "no sends"
+/// cannot fire on a series that does not exist.
+pub fn smtp_outbound_metrics(sent: u64, failed: u64) -> Vec<Metric> {
+    vec![
+        Metric {
+            name: "biset_smtp_outbound_total",
+            help: "Outbound SMTP send attempts, by result.",
+            kind: "counter",
+            labels: vec![("result".into(), "failed".into())],
+            value: failed,
+        },
+        Metric {
+            name: "biset_smtp_outbound_total",
+            help: "Outbound SMTP send attempts, by result.",
+            kind: "counter",
+            labels: vec![("result".into(), "sent".into())],
+            value: sent,
+        },
+    ]
+}
+
+/// The admin dashboard, a single static page.
+///
+/// Carried over verbatim rather than rewritten: it is a released client, and
+/// the JSON it fetches is this module's output. It is served **without a
+/// token** — every request the page makes carries one, so the shell itself
+/// holds no account data and is safe to serve to anyone who can reach the
+/// port. `the_dashboard_shell_is_public_but_carries_no_data` pins that.
+pub const DASHBOARD_HTML: &str = include_str!("admin_dashboard.html");
 
 #[cfg(test)]
 mod tests;
