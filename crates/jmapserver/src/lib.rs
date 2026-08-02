@@ -15,6 +15,7 @@ pub mod methods;
 pub mod mime;
 pub mod refs;
 pub mod server;
+pub mod storage;
 pub mod store;
 
 pub use authtoken::{decode_auth_token, hash_auth_token, verify_auth_token};
