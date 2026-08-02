@@ -496,10 +496,11 @@ HTTP 層（axum ルータ・CORS・SSE）と全体 difftest は **M6 に繰り�
 | M6h | デバイス / セッションエンドポイント（`devices`） | `414cbc5` |
 | M6i | WKD と PGP 鍵配布（`wkd`） | `668ce1d` |
 | M6j | オンボーディング（`setup`。`/auth/*` `/relay-info`） | `fb76d8d` |
+| M6k | カスタムドメインと自己削除（`customdomain`） | `c121cda` |
 
-残り: **M6k** — `/account/delete` `/domain/*` `/contacts`
-`/account/storage/*` `/metrics` `/admin/*` `/setup`(HTML) と、
-**ハンドラ配線 + 実 HTTP サーバ**。
+残り: **M6l** — jmapserver 側のエンドポイント
+（`/contacts` `/account/storage/*` `/metrics` `/admin/*`）、`/setup` の HTML、
+そして **ハンドラ配線 + 実 HTTP サーバ**。
 最後が入ると `just difftest` が oracle 対 Rust で意味を持つ。
 
 なお §4 の「ルーティングは axum」は M6d で**取り下げた**。
