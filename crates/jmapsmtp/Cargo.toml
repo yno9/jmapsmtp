@@ -74,6 +74,7 @@ regex.workspace = true
 walkdir.workspace = true
 
 [dev-dependencies]
+filetime.workspace = true
 futures-util.workspace = true
 pretty_assertions.workspace = true
 tempfile.workspace = true

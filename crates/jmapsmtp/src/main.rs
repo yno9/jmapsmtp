@@ -100,6 +100,31 @@ async fn run() -> Result<(), String> {
         &data_dir,
     );
 
+    // 13. Periodic upkeep. Returns without starting a timer when
+    //     `inactive_purge_days` is unset, so a relay without the setting has
+    //     no sweep at all rather than one that wakes to do nothing.
+    jmapsmtp::delivery::spawn_maintenance(state.clone());
+
+    // 14. SMTP, before the HTTP listener: a relay that accepts JMAP but not
+    //     mail is worse than one that is not up yet, because monitoring reads
+    //     it as healthy.
+    let smtp_addr = format!("0.0.0.0:{}", state.cfg.smtp_port());
+    let smtp = tokio::net::TcpListener::bind(&smtp_addr)
+        .await
+        .map_err(|e| format!("smtp listen {smtp_addr}: {e}"))?;
+    println!("[smtp] listening on {smtp_addr}");
+    {
+        let state = state.clone();
+        tokio::spawn(async move {
+            if let Err(e) = jmapsmtp::delivery::serve_smtp(smtp, state).await {
+                // Fatal for the relay: it is no longer receiving mail, and
+                // looking healthy would be worse than exiting.
+                eprintln!("smtp: {e}");
+                std::process::exit(1);
+            }
+        });
+    }
+
     // 15. Serve. The route table is built in `RelayState::new` and panics on a
     //     duplicate pattern, so a conflict stops the process here rather than
     //     after a deploy.
@@ -114,16 +139,20 @@ async fn run() -> Result<(), String> {
         .map_err(|e| format!("serve: {e}"))
 }
 
-/// Steps 8, 9, 11, 13 and 14 of SPEC.md §2 — the handler, the auth function,
-/// the per-account stores and alias map, periodic maintenance and the SMTP
-/// listener — are not wired yet. Their modules exist and are tested; what is
-/// missing is the assembly.
+/// What the startup sequence still does not do.
 ///
-/// Named here rather than left as an absence so the gap is visible from the
-/// entry point.
+/// Named here rather than left as an absence, so the gap is visible from the
+/// entry point rather than only from a plan.
 #[allow(dead_code)]
 const NOT_YET_WIRED: &[&str] = &[
-    "the JMAP handler and per-account stores (step 8, 11)",
-    "periodic maintenance (step 13)",
-    "the SMTP listener (step 14)",
+    // The stored copy is sealed and the message is put in the store, but
+    // nothing hands it to smtp_out yet — `hooks` has the decisions, the
+    // assembly is missing.
+    "outbound submission: the OnSubmitEmail hook to the SMTP client",
+    // The listener advertises STARTTLS and answers 454. `smtp_in::handle` is
+    // generic over the transport, so this is re-entering it on the TLS side.
+    "inbound STARTTLS",
+    // Claim, release and device vouches against the identity anchor. Every
+    // route that needs one answers 503 today.
+    "the anchor client",
 ];
