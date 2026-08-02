@@ -495,10 +495,10 @@ HTTP 層（axum ルータ・CORS・SSE）と全体 difftest は **M6 に繰り�
 
 | M6h | デバイス / セッションエンドポイント（`devices`） | `414cbc5` |
 | M6i | WKD と PGP 鍵配布（`wkd`） | `668ce1d` |
+| M6j | オンボーディング（`setup`。`/auth/*` `/relay-info`） | `fb76d8d` |
 
-残り: **M6j** — 残りのエンドポイント
-（`/setup` `/auth/*` `/account/delete` `/domain/*` `/contacts`
-`/account/storage/*` `/metrics` `/admin/*` `/relay-info`）と、
+残り: **M6k** — `/account/delete` `/domain/*` `/contacts`
+`/account/storage/*` `/metrics` `/admin/*` `/setup`(HTML) と、
 **ハンドラ配線 + 実 HTTP サーバ**。
 最後が入ると `just difftest` が oracle 対 Rust で意味を持つ。
 
