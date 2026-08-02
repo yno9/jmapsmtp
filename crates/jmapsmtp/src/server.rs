@@ -248,7 +248,7 @@ pub fn unauthorized() -> Response<Body> {
 /// Returns `(domain, localpart)`. The target of every per-account route comes
 /// from here and never from the request body or query — which is what makes
 /// those routes incapable of acting on somebody else's account.
-pub fn authenticate(state: &RelayState, req: &Request<Body>) -> Option<(String, String)> {
+pub fn authenticate(state: &RelayState, req: &Request<()>) -> Option<(String, String)> {
     use base64::Engine as _;
     let header = req.headers().get(header::AUTHORIZATION)?.to_str().ok()?;
     let encoded = header.strip_prefix("Basic ")?;
@@ -325,9 +325,26 @@ async fn dispatch(
         }
     }
 
+    // Read the body once, here, so every handler below stays synchronous —
+    // which is what lets them be unit-tested without a runtime.
+    let (parts, body) = req.into_parts();
+    let body = axum::body::to_bytes(body, 1 << 24)
+        .await
+        .unwrap_or_default();
+    let req = Request::from_parts(parts, ());
+
     match pattern {
         "/relay-info" => handlers::relay_info(&state),
         "/setup" => handlers::setup(&state, &req),
+        "/.well-known/openpgpkey/policy" => handlers::wkd_policy(),
+        "/.well-known/openpgpkey/hu/" => handlers::wkd_lookup(&state, &req),
+        "/pgp/pubkey" => handlers::pgp_pubkey(&state, &req, &body),
+        "/pgp/privkey" => handlers::pgp_privkey(&state, &req, &body),
+        "/pgp/peerkey" => handlers::pgp_peerkey(&state, &req, &body),
+        "/auth/envelope" => handlers::auth_envelope(&state, &req, &body),
+        "/auth/signup" => handlers::auth_signup(&state, &req, &body),
+        "/contacts" => handlers::contacts_list(&state, &req),
+        "/contacts/" => handlers::contacts_put(&state, &req, &body),
         _ => text_error(501, "not implemented"),
     }
 }
@@ -347,7 +364,7 @@ mod handlers {
         }
     }
 
-    pub fn setup(state: &RelayState, req: &Request<Body>) -> Response<Body> {
+    pub fn setup(state: &RelayState, req: &Request<()>) -> Response<Body> {
         let token = query_param(req, "token").unwrap_or_default();
         if token.is_empty() {
             return text_error(400, crate::setup::SetupError::TokenRequired.message());
@@ -371,10 +388,270 @@ mod handlers {
         );
         res
     }
+
+    // ── helpers ───────────────────────────────────────────────────────────
+
+    /// Every per-account route resolves its target here and nowhere else. An
+    /// address in a query or a body is never consulted, which is what makes
+    /// these routes incapable of acting on someone else's account.
+    fn account(state: &RelayState, req: &Request<()>) -> Option<(String, String)> {
+        authenticate(state, req)
+    }
+
+    fn method_not_allowed() -> Response<Body> {
+        text_error(405, "method not allowed")
+    }
+
+    // ── WKD ───────────────────────────────────────────────────────────────
+
+    /// A marker: an empty 200 *is* the answer, and its absence is how a WKD
+    /// client learns a domain does not do WKD.
+    pub fn wkd_policy() -> Response<Body> {
+        let mut res = Response::new(Body::empty());
+        *res.status_mut() = StatusCode::OK;
+        res
+    }
+
+    /// The public directory. Unauthenticated by design — a stranger has to be
+    /// able to find a key before they can encrypt to you.
+    pub fn wkd_lookup(state: &RelayState, req: &Request<()>) -> Response<Body> {
+        let hash = req
+            .uri()
+            .path()
+            .strip_prefix("/.well-known/openpgpkey/hu/")
+            .unwrap_or_default();
+        let localpart = query_param(req, "l").unwrap_or_default();
+
+        let data_dir = &state.data_dir;
+        let key = match crate::wkd::resolve_wkd(
+            &state.cfg,
+            hash,
+            &localpart,
+            state.global_pgp_key.is_some(),
+            |d, l| crate::wkd::pubkey_file(data_dir, d, l).exists(),
+        ) {
+            crate::wkd::WkdLookup::UserKey { domain, localpart } => {
+                crate::wkd::serve_pubkey(data_dir, &domain, &localpart)
+            }
+            crate::wkd::WkdLookup::GlobalKey => state
+                .global_pgp_key
+                .as_ref()
+                .and_then(|k| crate::pgp::serialize_public_key(k).ok()),
+            crate::wkd::WkdLookup::NotFound => None,
+        };
+        match key {
+            Some(key) => {
+                let mut res = octet_stream(key);
+                res.headers_mut().insert(
+                    header::ACCESS_CONTROL_ALLOW_ORIGIN,
+                    HeaderValue::from_static("*"),
+                );
+                res
+            }
+            None => mux_not_found(),
+        }
+    }
+
+    pub fn pgp_pubkey(state: &RelayState, req: &Request<()>, body: &[u8]) -> Response<Body> {
+        let mut res = if req.method() != axum::http::Method::PUT {
+            method_not_allowed()
+        } else {
+            match account(state, req) {
+                None => unauthorized(),
+                Some((domain, localpart)) => {
+                    match crate::wkd::store_pubkey(&state.data_dir, &domain, &localpart, body) {
+                        Ok(()) => no_content(),
+                        Err(e) => text_error(e.status(), e.message()),
+                    }
+                }
+            }
+        };
+        set_route_cors(&mut res, "PUT, OPTIONS", "Authorization, Content-Type");
+        res
+    }
+
+    /// The client-side-encrypted private key blob. Encrypted before it gets
+    /// here, but still the private key — it leaves only against the account's
+    /// own credential.
+    pub fn pgp_privkey(state: &RelayState, req: &Request<()>, body: &[u8]) -> Response<Body> {
+        let mut res = match account(state, req) {
+            None => unauthorized(),
+            Some((domain, localpart)) => match *req.method() {
+                axum::http::Method::GET => {
+                    match crate::wkd::read_privkey(&state.data_dir, &domain, &localpart) {
+                        Some(blob) => json_response_raw(200, blob),
+                        None => mux_not_found(),
+                    }
+                }
+                axum::http::Method::PUT => {
+                    match crate::wkd::store_privkey(&state.data_dir, &domain, &localpart, body) {
+                        Ok(()) => no_content(),
+                        Err(_) => text_error(500, "internal error"),
+                    }
+                }
+                _ => method_not_allowed(),
+            },
+        };
+        set_route_cors(&mut res, "GET, PUT, OPTIONS", "Authorization, Content-Type");
+        res
+    }
+
+    /// Autocrypt peer keys, gathered from incoming mail. Per **domain**, not
+    /// per account.
+    pub fn pgp_peerkey(state: &RelayState, req: &Request<()>, body: &[u8]) -> Response<Body> {
+        let mut res = (|| {
+            if !matches!(
+                *req.method(),
+                axum::http::Method::GET | axum::http::Method::PUT
+            ) {
+                return method_not_allowed();
+            }
+            // A plain 401 with no WWW-Authenticate, unlike its neighbours.
+            let Some((domain, _)) = authenticate(state, req) else {
+                return text_error(401, "unauthorized");
+            };
+            let Some(addr) = query_param(req, "addr").filter(|a| !a.is_empty()) else {
+                return text_error(400, crate::wkd::KeyError::AddrRequired.message());
+            };
+            let path = crate::wkd::peer_key_path(&state.data_dir, &domain, &addr);
+            if *req.method() == axum::http::Method::GET {
+                match std::fs::read(&path) {
+                    Ok(b) => octet_stream(b),
+                    Err(_) => text_error(404, crate::wkd::KeyError::NotFound.message()),
+                }
+            } else {
+                if let Some(parent) = path.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                match std::fs::write(&path, body) {
+                    Ok(()) => no_content(),
+                    Err(_) => text_error(500, "internal error"),
+                }
+            }
+        })();
+        set_route_cors(&mut res, "GET, PUT, OPTIONS", "Authorization, Content-Type");
+        res
+    }
+
+    // ── onboarding ────────────────────────────────────────────────────────
+
+    pub fn auth_envelope(state: &RelayState, req: &Request<()>, body: &[u8]) -> Response<Body> {
+        let mut res = match *req.method() {
+            axum::http::Method::GET => {
+                let email = query_param(req, "email").unwrap_or_default();
+                match crate::setup::read_envelope_for(
+                    &state.cfg,
+                    &state.dynamic_domains,
+                    &state.data_dir,
+                    &email,
+                ) {
+                    Ok(bytes) => json_response_raw(200, bytes),
+                    Err(crate::setup::SetupError::NotFound) => mux_not_found(),
+                    Err(e) => text_error(e.status(), e.message()),
+                }
+            }
+            axum::http::Method::PUT => match account(state, req) {
+                None => unauthorized(),
+                Some((domain, localpart)) => {
+                    match crate::setup::replace_envelope(&state.data_dir, &domain, &localpart, body)
+                    {
+                        Ok(()) => no_content(),
+                        Err(e) => text_error(e.status(), e.message()),
+                    }
+                }
+            },
+            _ => method_not_allowed(),
+        };
+        set_route_cors(&mut res, "GET, PUT, OPTIONS", "Authorization, Content-Type");
+        res
+    }
+
+    pub fn auth_signup(state: &RelayState, req: &Request<()>, body: &[u8]) -> Response<Body> {
+        let mut res = if req.method() != axum::http::Method::POST {
+            method_not_allowed()
+        } else {
+            let token = query_param(req, "token").unwrap_or_default();
+            match crate::setup::signup(&state.cfg, &state.data_dir, &token, body) {
+                Ok(_) => no_content(),
+                Err(e) => text_error(e.status(), e.message()),
+            }
+        };
+        set_route_cors(&mut res, "POST, OPTIONS", "Content-Type");
+        res
+    }
+
+    // ── contacts ──────────────────────────────────────────────────────────
+
+    pub fn contacts_list(state: &RelayState, req: &Request<()>) -> Response<Body> {
+        if req.method() != axum::http::Method::GET {
+            return method_not_allowed();
+        }
+        let Some((domain, localpart)) = authenticate(state, req) else {
+            return text_error(401, "unauthorized");
+        };
+        let dir = crate::auth_env::account_dir(&state.data_dir, &domain, &localpart);
+        let cards = jmapserver::contacts::read_contacts(&dir);
+        match jmap_types::go_json::to_vec(&std::collections::BTreeMap::from([("cards", cards)])) {
+            Ok(body) => json_response(200, body),
+            Err(_) => text_error(500, "internal error"),
+        }
+    }
+
+    pub fn contacts_put(state: &RelayState, req: &Request<()>, body: &[u8]) -> Response<Body> {
+        if req.method() != axum::http::Method::PUT {
+            return method_not_allowed();
+        }
+        let uid = req
+            .uri()
+            .path()
+            .strip_prefix("/contacts/")
+            .unwrap_or_default()
+            .to_string();
+        if uid.is_empty() {
+            return mux_not_found();
+        }
+        let Some((domain, localpart)) = authenticate(state, req) else {
+            return text_error(401, "unauthorized");
+        };
+        match jmapserver::contacts::parse_upsert(&uid, body) {
+            Err(e) => text_error(e.status(), e.message()),
+            Ok(card) => {
+                let dir = crate::auth_env::account_dir(&state.data_dir, &domain, &localpart);
+                if std::fs::create_dir_all(&dir).is_err() {
+                    return text_error(500, "internal error");
+                }
+                match jmapserver::contacts::put_contact(&dir, card) {
+                    Ok(()) => no_content(),
+                    Err(_) => text_error(500, "internal error"),
+                }
+            }
+        }
+    }
+}
+
+/// A body served as-is, with a JSON content type and **no added newline** —
+/// these are stored bytes echoed back, not an Encoder's output.
+pub fn json_response_raw(status: u16, body: Vec<u8>) -> Response<Body> {
+    let mut res = Response::new(Body::from(body));
+    *res.status_mut() = StatusCode::from_u16(status).expect("a valid status");
+    res.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/json"),
+    );
+    res
+}
+
+pub fn octet_stream(body: Vec<u8>) -> Response<Body> {
+    let mut res = Response::new(Body::from(body));
+    res.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/octet-stream"),
+    );
+    res
 }
 
 /// One query parameter, percent-decoded.
-pub fn query_param(req: &Request<Body>, name: &str) -> Option<String> {
+pub fn query_param(req: &Request<()>, name: &str) -> Option<String> {
     let query = req.uri().query()?;
     for pair in query.split('&') {
         let (k, v) = pair.split_once('=').unwrap_or((pair, ""));

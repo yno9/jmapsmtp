@@ -89,7 +89,12 @@ fn both(seed: fn(&Path)) -> Option<(Oracle, Ours)> {
 
 fn no_seed(_: &Path) {}
 
-/// Compare a request against both servers.
+/// Compare a request against both servers: status, body, and every header a
+/// client can act on.
+///
+/// The headers are part of it because the per-route CORS lists differ from the
+/// wrapper's and from each other — that is precisely where guessing goes
+/// unnoticed, and it is what the CORS layering bug hid behind.
 fn compare(o: &Oracle, ours: &Ours, target: &str) -> (u16, String, String) {
     let (go_status, go_body, go_location) = o.get(target);
     let (our_status, our_body, our_location) = ours.get(target);
@@ -99,6 +104,23 @@ fn compare(o: &Oracle, ours: &Ours, target: &str) -> (u16, String, String) {
     );
     assert_eq!(our_location, go_location, "{target}: Location");
     assert_eq!(our_body, go_body, "{target}: body");
+
+    let go_headers = o.headers(target);
+    let our_headers = ours_headers(ours, target);
+    for name in [
+        "access-control-allow-origin",
+        "access-control-allow-headers",
+        "access-control-allow-methods",
+        "content-type",
+        "www-authenticate",
+        "x-content-type-options",
+    ] {
+        assert_eq!(
+            our_headers.get(name).map(String::as_str),
+            go_headers.get(name).map(String::as_str),
+            "{target}: {name}"
+        );
+    }
     (go_status, go_body, go_location)
 }
 
@@ -197,6 +219,94 @@ fn the_setup_page_is_byte_identical_from_both_servers() {
     ours.stop();
 }
 
+// ── the newly wired routes ────────────────────────────────────────────────
+
+/// The unauthenticated half of the surface, compared byte for byte.
+#[test]
+fn the_public_routes_are_byte_identical() {
+    let Some((o, ours)) = both(seed_accounts) else {
+        return;
+    };
+
+    for target in [
+        "/.well-known/openpgpkey/policy",
+        // A key that exists, one that does not, and a mismatched l= — the
+        // case where serving the wrong key would be a privacy failure.
+        &format!(
+            "/.well-known/openpgpkey/hu/{}?l=alice",
+            jmapsmtp::wkd::wkd_hash("alice")
+        ),
+        &format!(
+            "/.well-known/openpgpkey/hu/{}?l=bob",
+            jmapsmtp::wkd::wkd_hash("bob")
+        ),
+        &format!(
+            "/.well-known/openpgpkey/hu/{}?l=bob",
+            jmapsmtp::wkd::wkd_hash("alice")
+        ),
+        // The envelope is public: the client needs it before it has a
+        // credential, and it is inert without the password.
+        "/auth/envelope?email=alice@a.test",
+        "/auth/envelope?email=nobody@a.test",
+        "/auth/envelope?email=alice@nope.test",
+        "/auth/envelope",
+        "/auth/envelope?email=alice",
+        // A hash that is not one, and signup's refusals — all reachable
+        // without a credential, so all part of what a stranger can learn.
+        "/.well-known/openpgpkey/hu/notahash?l=alice",
+        "/auth/signup",
+        "/auth/signup?token=not-a-real-token",
+    ] {
+        compare(&o, &ours, target);
+    }
+    ours.stop();
+}
+
+/// The authenticated routes, refused the same way when unauthenticated. A
+/// difference here is a route that is open on one side and closed on the
+/// other.
+#[test]
+fn the_authenticated_routes_refuse_identically() {
+    let Some((o, ours)) = both(seed_accounts) else {
+        return;
+    };
+    for target in ["/pgp/privkey", "/pgp/peerkey?addr=x@y.test", "/contacts"] {
+        let (status, _, _) = compare(&o, &ours, target);
+        assert_eq!(status, 401, "{target} should need a credential");
+    }
+
+    // `/contacts/<uid>` and `/pgp/pubkey` are PUT-only, so a GET is refused on
+    // the method before the credential is looked at — on both sides. Compared
+    // rather than assumed, since the order decides whether a wrong-method
+    // request can be used to probe which accounts exist.
+    for target in ["/contacts/uid-1", "/pgp/pubkey"] {
+        let (status, _, _) = compare(&o, &ours, target);
+        assert_eq!(status, 405, "{target}: the method is checked first");
+    }
+    ours.stop();
+}
+
+/// `alice` has a public key and an envelope; `bob` has neither. One boot
+/// covers both the found and the not-found branches of every lookup.
+fn seed_accounts(root: &Path) {
+    const PUBKEY: &str = include_str!("../../../xtask/fixtures/pgp-public.asc");
+    for lp in ["alice", "bob"] {
+        let acct = root.join("data/a.test").join(lp);
+        std::fs::create_dir_all(&acct).unwrap();
+        std::fs::write(
+            acct.join("auth_token_hash"),
+            jmapserver::hash_auth_token(b"server-interop-token-0000000000"),
+        )
+        .unwrap();
+    }
+    std::fs::write(root.join("data/a.test/alice/pubkey.pgp"), PUBKEY).unwrap();
+    std::fs::write(
+        root.join("data/a.test/alice/envelope.json"),
+        br#"{"v":1,"salt":"AAAA","kdf":{"t":3,"m":65536,"p":4},"wrapped_secret":"AAAA","auth_token_hash":"AAAA"}"#,
+    )
+    .unwrap();
+}
+
 // ── what is not wired ─────────────────────────────────────────────────────
 
 /// The routes still to be wired answer 501 here and something else on the
@@ -213,16 +323,15 @@ fn the_unwired_routes_are_the_ones_named_here() {
         "/jmap/api/",
         "/jmap/eventsource/",
         "/jmap/push/vapid-public-key",
-        "/.well-known/openpgpkey/policy",
-        "/pgp/pubkey",
-        "/auth/envelope?email=alice@a.test",
-        "/auth/signup",
+        "/jmap/push/subscribe",
+        "/jmap/push/unsubscribe",
         "/account/provision",
         "/account/session",
         "/account/devices",
-        "/contacts",
         "/account/delete",
         "/account/storage",
+        "/account/storage/messages",
+        "/account/storage/export",
         "/admin/dashboard",
     ];
 

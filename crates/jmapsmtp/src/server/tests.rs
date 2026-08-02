@@ -239,7 +239,7 @@ async fn the_metrics_token_does_not_open_the_admin_routes() {
 
 #[test]
 fn query_values_are_percent_decoded() {
-    let req = |uri: &str| Request::builder().uri(uri).body(Body::empty()).unwrap();
+    let req = |uri: &str| Request::builder().uri(uri).body(()).unwrap();
     assert_eq!(
         query_param(&req("/x?email=a%40b.test"), "email").as_deref(),
         Some("a@b.test")
@@ -267,7 +267,10 @@ fn query_values_are_percent_decoded() {
 /// makes every unwired route show up as a difference until it is wired.
 #[tokio::test]
 async fn unwired_routes_answer_501_rather_than_something_plausible() {
-    let (status, body, _) = get(state(), "/contacts").await;
+    // `/account/provision` is still unwired. `tests/server_interop.rs` holds
+    // the authoritative list and compares each against the oracle; this only
+    // checks the shape of the answer.
+    let (status, body, _) = get(state(), "/account/provision").await;
     assert_eq!(status, 501);
     assert_eq!(body, "not implemented\n");
 }
