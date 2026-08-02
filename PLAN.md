@@ -501,10 +501,13 @@ HTTP 層（axum ルータ・CORS・SSE）と全体 difftest は **M6 に繰り�
 | M6m | DID 起点の連絡先キャッシュ（`jmapserver::contacts`） | `eaeefe5` |
 | M6n | 管理系とメトリクス（`jmapserver::admin`） | `2d5bddc` |
 | M6o | アクティビティログ（`jmapserver::activity`） | `50b4474` |
+| M6p | `/setup` ページ（`setup_page`。逐語コピー + バイト比較） | `9cc1c6d` |
 
-残り: **M6p** — `/setup` の HTML、
-そして **ハンドラ配線 + 実 HTTP サーバ**。
-最後が入ると `just difftest` が oracle 対 Rust で意味を持つ。
+**エンドポイントの移植は全部終わった。**
+
+残り: **M6q** — **ハンドラ配線 + 実 HTTP サーバ**（`gomux` にハンドラを載せ、
+`main` を起動シーケンス通りに組む）。
+これが入ると `just difftest` が oracle 対 Rust で意味を持つ。
 
 なお §4 の「ルーティングは axum」は M6d で**取り下げた**。
 二重登録 panic・サブツリー一致・リダイレクトが観測可能な挙動なので、
