@@ -215,6 +215,20 @@ struct AccountsInner {
 }
 
 impl Accounts {
+    /// A second handle onto the same table.
+    ///
+    /// The JMAP server takes ownership of its handler, and the handler needs
+    /// the same accounts the HTTP layer resolves credentials against — one
+    /// copy each would drift the moment an account is provisioned.
+    pub fn clone_of(other: &Accounts) -> Accounts {
+        Accounts {
+            inner: parking_lot::RwLock::new(AccountsInner {
+                stores: other.inner.read().stores.clone(),
+                aliases: other.inner.read().aliases.clone(),
+            }),
+        }
+    }
+
     pub fn insert(&self, account: AccountStore, aliases: &[String]) {
         let mut inner = self.inner.write();
         let primary = account.email.clone();
@@ -260,3 +274,56 @@ impl Accounts {
 
 #[cfg(test)]
 mod tests;
+
+/// The [`jmapserver::Handler`] this relay installs.
+///
+/// It owns the per-account [`jmapserver::Store`]s and resolves each method
+/// call's `accountId` to one of them. A call naming an account this relay does
+/// not serve gets an error rather than another account's data — which is the
+/// only isolation there is between accounts at the JMAP layer, since the
+/// credential is checked once, at the HTTP edge.
+pub struct RelayHandler {
+    pub accounts: std::sync::Arc<Accounts>,
+    pub hub: std::sync::Arc<jmapserver::Hub>,
+}
+
+impl jmapserver::Handler for RelayHandler {
+    fn capabilities(&self) -> Vec<jmap_types::Uri> {
+        // `urn:ietf:params:jmap:core` is added by the server itself.
+        vec![
+            jmap_types::Uri::from("urn:ietf:params:jmap:mail"),
+            jmap_types::Uri::from("urn:ietf:params:jmap:submission"),
+        ]
+    }
+
+    fn accounts(&self) -> Vec<jmapserver::Account> {
+        self.accounts
+            .primaries()
+            .into_iter()
+            .map(|address| jmapserver::Account {
+                id: Id::from(address.as_str()),
+                name: address,
+            })
+            .collect()
+    }
+
+    fn handle(&self, method: &str, args: &serde_json::Value) -> jmapserver::MethodResult {
+        let account_id = args
+            .get("accountId")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        let Some(account) = self.accounts.get(account_id) else {
+            // Go formats this as `accountNotFound: <id>` and it surfaces as a
+            // `serverFail` — the message carries the distinction, not the
+            // type. Reproduced verbatim: a client that matches on the string
+            // is matching on this one.
+            return Err(jmapserver::MethodError::ServerFail(format!(
+                "accountNotFound: {account_id}"
+            )));
+        };
+        let now = jmap_types::JmapTime::now_utc();
+        account
+            .store
+            .dispatch(&Id::from(account_id), method, args, now.as_str())
+    }
+}

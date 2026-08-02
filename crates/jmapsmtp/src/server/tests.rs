@@ -235,6 +235,55 @@ async fn the_metrics_token_does_not_open_the_admin_routes() {
     assert_eq!(with("admin-secret", "/metrics").await, 401);
 }
 
+// ── opening the stores ────────────────────────────────────────────────────
+
+/// Every configured account gets a store and the single derived inbox.
+///
+/// Tested here rather than in `server_interop`: that suite shares the oracle's
+/// data directory, so the oracle has already written `mailboxes.json` and
+/// removing this port's write changes nothing there. A fresh directory is the
+/// only place the write itself is observable.
+#[tokio::test]
+async fn opening_the_stores_writes_the_derived_inbox() {
+    let state = state();
+    state.open_stores().expect("stores should open");
+
+    let path = state.data_dir.join("a.test/alice/mailboxes.json");
+    let stored: Vec<jmap_types::mailbox::Mailbox> =
+        serde_json::from_slice(&std::fs::read(&path).expect("mailboxes.json")).unwrap();
+    assert_eq!(stored.len(), 1, "one mailbox per account");
+    assert_eq!(
+        stored[0].id,
+        crate::handler::default_inbox("alice@a.test").id,
+        "derived from the address, so a cached id survives a restart"
+    );
+
+    // …and the account is resolvable by its address and its aliases.
+    assert!(state.accounts.get("alice@a.test").is_some());
+    assert!(state.accounts.resolve("alice@a.test").is_some());
+}
+
+/// An account with an alias resolves by it. The alias map is built in the same
+/// step, so a store without its aliases would take mail nowhere.
+#[tokio::test]
+async fn opening_the_stores_registers_the_alias_map() {
+    let tmp = tempfile::tempdir().unwrap().keep();
+    let cfg: Config = serde_json::from_str(
+        r#"{"domain":{"a.test":{"account":{"alice":{"alias":["postmaster","a@other.test"]}}}}}"#,
+    )
+    .unwrap();
+    let state = RelayState::with_tokens(cfg, tmp, "", "");
+    state.open_stores().unwrap();
+
+    for addr in ["alice@a.test", "postmaster@a.test", "a@other.test"] {
+        assert_eq!(
+            state.accounts.resolve(addr).map(|a| a.email.clone()),
+            Some("alice@a.test".into()),
+            "{addr}"
+        );
+    }
+}
+
 // ── /admin/accounts/<address> ─────────────────────────────────────────────
 
 /// The address is split on the **last** `@`, as Go's `LastIndex` does. The

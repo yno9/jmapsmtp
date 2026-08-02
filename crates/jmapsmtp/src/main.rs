@@ -78,6 +78,11 @@ async fn run() -> Result<(), String> {
         );
     }
 
+    // 11. A Store per configured account, plus the alias map. Fatal on
+    //     failure: a relay that starts while silently dropping one account's
+    //     mail looks healthy and is not.
+    state.open_stores()?;
+
     // 12. Recover accounts created in previous runs. Same existence rule as
     //     the sweep: an auth_token_hash, never an envelope.
     jmapsmtp::startup::scan_dyn_accounts(

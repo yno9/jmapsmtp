@@ -148,10 +148,23 @@ impl Oracle {
             .spawn()
             .expect("the oracle should start");
 
+        // Wait for a file **this child** writes, not just for the port.
+        //
+        // A port is not proof of identity. `free_port` probes a port and
+        // releases it, and a concurrently-running test binary can bind it in
+        // the gap — so a successful connect may be to *another* oracle, whose
+        // data directory is not the one seeded here. That failed
+        // intermittently and looked like a missing setup token.
+        //
+        // The oracle generates an inbound TLS certificate under its own data
+        // directory during startup, and that directory is uniquely this
+        // child's. Waiting for it means the readiness signal cannot be
+        // another process's.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
         let addr = format!("127.0.0.1:{http_port}");
+        let own_artifact = root.path().join("data/smtp-tls-cert.pem");
         loop {
-            if TcpStream::connect(&addr).is_ok() {
+            if own_artifact.exists() && TcpStream::connect(&addr).is_ok() {
                 break;
             }
             if let Ok(Some(status)) = child.try_wait() {
@@ -161,9 +174,11 @@ impl Oracle {
             }
             assert!(
                 std::time::Instant::now() < deadline,
-                "the oracle never opened {addr}"
+                "the oracle never became ready on {addr} \
+                 (artifact present: {})",
+                own_artifact.exists()
             );
-            std::thread::sleep(std::time::Duration::from_millis(50));
+            std::thread::sleep(std::time::Duration::from_millis(20));
         }
 
         Some(Oracle {
@@ -324,6 +339,18 @@ pub fn raw_get(port: u16, target: &str) -> (u16, String, String) {
     (status, body, location)
 }
 
+/// A raw authenticated GET against any port.
+pub fn raw_get_auth(port: u16, target: &str, auth: &str) -> (u16, String) {
+    let (status, body, _, _) = raw_request_full(port, "GET", target, None, Some(auth));
+    (status, body)
+}
+
+/// A raw authenticated POST against any port.
+pub fn raw_post_auth(port: u16, target: &str, body: &str, auth: &str) -> (u16, String) {
+    let (status, body, _, _) = raw_request_full(port, "POST", target, Some(body), Some(auth));
+    (status, body)
+}
+
 /// The response headers, lowercased.
 pub fn raw_headers(port: u16, target: &str) -> std::collections::BTreeMap<String, String> {
     raw_request(port, target).3
@@ -338,14 +365,41 @@ fn raw_request(
     String,
     std::collections::BTreeMap<String, String>,
 ) {
+    raw_request_full(port, "GET", target, None, None)
+}
+
+fn raw_request_full(
+    port: u16,
+    method: &str,
+    target: &str,
+    body: Option<&str>,
+    basic_auth: Option<&str>,
+) -> (
+    u16,
+    String,
+    String,
+    std::collections::BTreeMap<String, String>,
+) {
     let mut s = TcpStream::connect(format!("127.0.0.1:{port}")).unwrap();
     s.set_read_timeout(Some(std::time::Duration::from_secs(10)))
         .unwrap();
     write!(
         s,
-        "GET {target} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n"
+        "{method} {target} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n"
     )
     .unwrap();
+    if let Some(auth) = basic_auth {
+        write!(s, "Authorization: Basic {auth}\r\n").unwrap();
+    }
+    match body {
+        Some(b) => write!(
+            s,
+            "Content-Type: application/json\r\nContent-Length: {}\r\n\r\n{b}",
+            b.len()
+        )
+        .unwrap(),
+        None => write!(s, "\r\n").unwrap(),
+    }
     s.flush().unwrap();
 
     let mut r = BufReader::new(s);

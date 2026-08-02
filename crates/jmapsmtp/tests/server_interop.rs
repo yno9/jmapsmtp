@@ -49,6 +49,7 @@ impl Ours {
                 .unwrap();
             rt.block_on(async move {
                 let state = RelayState::new(cfg, data_dir);
+                state.open_stores().expect("stores should open");
                 let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
                     .await
                     .expect("bind");
@@ -82,7 +83,11 @@ impl Ours {
 
 fn both(seed: fn(&Path)) -> Option<(Oracle, Ours)> {
     let o = Oracle::start_with("SERVER_INTEROP", config_json, seed)?;
-    let cfg: Config = serde_json::from_str(&config_json(1, 1)).unwrap();
+    // The **oracle's** port, because `base_url` is what the session object
+    // reports as its apiUrl and friends. This port's server binds its own
+    // port; only the advertised URLs come from here, and those have to match
+    // or the comparison is measuring the fixture.
+    let cfg: Config = serde_json::from_str(&config_json(o.http_port, 1)).unwrap();
     let ours = Ours::start(&o.root.path().join("data"), cfg);
     Some((o, ours))
 }
@@ -365,6 +370,105 @@ fn the_admin_listing_agrees_on_every_real_account() {
     ours.stop();
 }
 
+/// The JMAP core: the session object and a method batch, from both servers.
+///
+/// This is the relay's actual purpose, and the first thing here that needs the
+/// per-account stores — so it is also the first test that would fail if the
+/// startup sequence assembled them differently.
+#[test]
+fn the_jmap_session_and_api_agree() {
+    use base64::Engine as _;
+    let Some((o, ours)) = both(seed_accounts) else {
+        return;
+    };
+    let password =
+        base64::engine::general_purpose::STANDARD.encode(b"server-interop-token-0000000000");
+    let auth = base64::engine::general_purpose::STANDARD.encode(format!("alice@a.test:{password}"));
+
+    // Unauthenticated, both refuse the same way — including a GET on the API
+    // route, which is POST-only.
+    compare(&o, &ours, "/.well-known/jmap");
+    compare(&o, &ours, "/jmap/api/");
+
+    // The session object. Compared as JSON rather than bytes: it carries a
+    // state string derived from the store, which is not expected to match
+    // across two independently-opened stores.
+    let go: serde_json::Value =
+        serde_json::from_str(&o.get_auth("/.well-known/jmap", &auth).1).unwrap();
+    let mine: serde_json::Value = serde_json::from_str(
+        &oracle_harness::raw_get_auth(ours.port, "/.well-known/jmap", &auth).1,
+    )
+    .unwrap();
+
+    assert_eq!(mine["capabilities"], go["capabilities"], "capabilities");
+    assert_eq!(mine["accounts"], go["accounts"], "accounts");
+    assert_eq!(mine["primaryAccounts"], go["primaryAccounts"]);
+    assert_eq!(mine["username"], go["username"]);
+    assert_eq!(mine["apiUrl"], go["apiUrl"]);
+    assert_eq!(mine["downloadUrl"], go["downloadUrl"]);
+    assert_eq!(mine["uploadUrl"], go["uploadUrl"]);
+    assert_eq!(mine["eventSourceUrl"], go["eventSourceUrl"]);
+
+    // A method batch against an empty account.
+    let batch = r#"{"using":["urn:ietf:params:jmap:mail"],
+        "methodCalls":[["Mailbox/get",{"accountId":"alice@a.test"},"c0"]]}"#;
+    let go: serde_json::Value =
+        serde_json::from_str(&o.post_json_auth("/jmap/api/", batch, &auth).1).unwrap();
+    let mine: serde_json::Value = serde_json::from_str(
+        &oracle_harness::raw_post_auth(ours.port, "/jmap/api/", batch, &auth).1,
+    )
+    .unwrap();
+
+    // An authenticated GET on the API route. The credential is checked before
+    // the method, so this is the only way to reach the method check at all —
+    // an unauthenticated GET is refused first and says nothing about it.
+    let (go_status, go_body, _) = o.get_auth("/jmap/api/", &auth);
+    let (our_status, our_body) = oracle_harness::raw_get_auth(ours.port, "/jmap/api/", &auth);
+    assert_eq!(our_status, go_status, "GET /jmap/api/: {go_body:.120}");
+    assert_eq!(our_body, go_body, "GET /jmap/api/");
+
+    let strip_state = |mut v: serde_json::Value| {
+        // `state` is a per-store counter, and the two stores were opened
+        // independently. Everything else about the response is the contract.
+        if let Some(r) = v["methodResponses"][0][1].as_object_mut() {
+            r.remove("state");
+        }
+        v
+    };
+    assert_eq!(strip_state(mine), strip_state(go), "Mailbox/get");
+
+    // An account this relay does not serve is refused, not answered with
+    // somebody else's data.
+    let batch = r#"{"using":["urn:ietf:params:jmap:mail"],
+        "methodCalls":[["Mailbox/get",{"accountId":"nobody@a.test"},"c0"]]}"#;
+    let go: serde_json::Value =
+        serde_json::from_str(&o.post_json_auth("/jmap/api/", batch, &auth).1).unwrap();
+    let mine: serde_json::Value = serde_json::from_str(
+        &oracle_harness::raw_post_auth(ours.port, "/jmap/api/", batch, &auth).1,
+    )
+    .unwrap();
+    assert_eq!(mine, go, "an unknown accountId");
+    // The error entry keeps the **method name** in slot 0, not the string
+    // "error" — `error_response` is called with the method it is answering.
+    // Worth pinning: a client matching on slot 0 to detect failure never
+    // would.
+    assert_eq!(go["methodResponses"][0][0], "Mailbox/get");
+    assert_eq!(
+        go["methodResponses"][0][1]["type"], "serverFail",
+        "and the failure is in the payload: {}",
+        go["methodResponses"][0][1]
+    );
+    assert!(
+        go["methodResponses"][0][1]["description"]
+            .as_str()
+            .is_some_and(|d| d.contains("accountNotFound")),
+        "the message carries the distinction: {}",
+        go["methodResponses"][0][1]
+    );
+
+    ours.stop();
+}
+
 // ── what is not wired ─────────────────────────────────────────────────────
 
 /// The routes still to be wired answer 501 here and something else on the
@@ -377,8 +481,6 @@ fn the_unwired_routes_are_the_ones_named_here() {
     };
 
     let unwired = [
-        "/.well-known/jmap",
-        "/jmap/api/",
         "/jmap/eventsource/",
         "/jmap/push/vapid-public-key",
         "/jmap/push/subscribe",

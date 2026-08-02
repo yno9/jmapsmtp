@@ -44,6 +44,8 @@ pub struct RelayState {
     /// environment it happens to run in.
     pub admin_token: String,
     pub metrics_token: String,
+    /// Broadcasts state changes to event-source subscribers.
+    pub hub: Arc<jmapserver::Hub>,
     mux: GoMux<RouteSpec>,
 }
 
@@ -65,8 +67,66 @@ impl RelayState {
             global_pgp_key: load_global_pgp_key(),
             admin_token: crate::bearer::token_from_env("ADMIN_TOKEN"),
             metrics_token: crate::bearer::token_from_env("METRICS_TOKEN"),
+            hub: Arc::new(jmapserver::Hub::new()),
             mux,
         })
+    }
+
+    /// Open a [`jmapserver::Store`] for every configured account and register
+    /// its aliases — step 11 of SPEC.md §2.
+    ///
+    /// An account whose store cannot be opened is **fatal**, not skipped:
+    /// carrying on would serve a relay that silently drops one account's mail
+    /// while looking healthy.
+    pub fn open_stores(&self) -> Result<(), String> {
+        let aliases = crate::startup::build_alias_map(&self.cfg);
+        for (domain, dom_cfg) in &self.cfg.domains {
+            for localpart in dom_cfg.accounts.keys() {
+                let localpart = localpart.to_lowercase();
+                let primary = format!("{localpart}@{domain}");
+                let dir = crate::auth_env::account_dir(&self.data_dir, domain, &localpart);
+                let store =
+                    jmapserver::Store::open(&dir).map_err(|e| format!("store {primary}: {e}"))?;
+                // The single mailbox every account gets. Written on every
+                // start, and derived from the address, so a client's cached
+                // mailbox id survives a restart.
+                let _ = store.put_mailboxes(&[crate::handler::default_inbox(&primary)]);
+
+                let mine: Vec<String> = aliases
+                    .iter()
+                    .filter(|(_, target)| *target == &primary)
+                    .map(|(alias, _)| alias.clone())
+                    .collect();
+                self.accounts.insert(
+                    crate::handler::AccountStore {
+                        email: primary.clone(),
+                        domain: domain.clone(),
+                        localpart,
+                        dir,
+                        store: Arc::new(store),
+                    },
+                    &mine,
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// The JMAP server view of this relay.
+    fn jmap(&self) -> jmapserver::Server {
+        jmapserver::Server {
+            cfg: self.cfg.server_config(),
+            handler: Arc::new(crate::handler::RelayHandler {
+                accounts: Arc::new(crate::handler::Accounts::clone_of(&self.accounts)),
+                hub: self.hub.clone(),
+            }),
+            hub: self.hub.clone(),
+            // Credentials are resolved at the HTTP edge, before a request
+            // reaches here, so the library's own auth is not installed —
+            // leaving it unset would fall through to its accept-everything
+            // default (server.rs's `authenticate`).
+            auth: Some(Arc::new(|_, _| None)),
+        }
     }
 
     /// As [`RelayState::new`], with the bearer tokens supplied rather than
@@ -234,11 +294,27 @@ pub fn no_content() -> Response<Body> {
 }
 
 /// A 401 that also tells the client how to authenticate.
+///
+/// The relay's own routes challenge with `Basic realm="biset"`; the JMAP
+/// library's challenge with `Bearer realm="jmap"` — see [`unauthorized_jmap`].
+/// Two different strings for the same 401, and both are on the wire.
 pub fn unauthorized() -> Response<Body> {
     let mut res = text_error(401, "unauthorized");
     res.headers_mut().insert(
         header::WWW_AUTHENTICATE,
         HeaderValue::from_static("Basic realm=\"biset\""),
+    );
+    res
+}
+
+/// The JMAP routes' 401. `jmapserver` writes `Bearer realm="jmap"` where the
+/// relay's own handlers write `Basic realm="biset"` — a client that acts on
+/// the challenge sees a different one depending on which route it hit.
+pub fn unauthorized_jmap() -> Response<Body> {
+    let mut res = text_error(401, "unauthorized");
+    res.headers_mut().insert(
+        header::WWW_AUTHENTICATE,
+        HeaderValue::from_static("Bearer realm=\"jmap\""),
     );
     res
 }
@@ -352,6 +428,8 @@ async fn dispatch(
         "/account/storage/export" => handlers::storage_export(&state, &req),
         "/admin/accounts" => handlers::admin_accounts(&state, &req),
         "/admin/accounts/" => handlers::admin_account_detail(&state, &req),
+        "/.well-known/jmap" => handlers::jmap_session(&state, &req),
+        "/jmap/api/" => handlers::jmap_api(&state, &req, &body),
         _ => text_error(501, "not implemented"),
     }
 }
@@ -889,6 +967,50 @@ mod handlers {
             Ok(body) => json_response(200, body),
             Err(_) => text_error(500, "internal error"),
         }
+    }
+
+    // ── the JMAP core ─────────────────────────────────────────────────────
+
+    /// `GET /.well-known/jmap` — the session object, which tells a client
+    /// which accounts it has and where to send everything else.
+    pub fn jmap_session(state: &RelayState, req: &Request<()>) -> Response<Body> {
+        let mut res = match authenticate(state, req) {
+            None => unauthorized_jmap(),
+            Some((domain, localpart)) => {
+                let id = jmap_types::Id::from(format!("{localpart}@{domain}").as_str());
+                let session = jmapserver::server::session(&state.jmap(), Some(&id));
+                json_response_raw(200, jmapserver::server::encode(&session))
+            }
+        };
+        set_route_cors(
+            &mut res,
+            "GET, POST, OPTIONS",
+            "Authorization, Content-Type",
+        );
+        res
+    }
+
+    /// `POST /jmap/api/` — a batch of method calls.
+    pub fn jmap_api(state: &RelayState, req: &Request<()>, body: &[u8]) -> Response<Body> {
+        let mut res = (|| {
+            if authenticate(state, req).is_none() {
+                return unauthorized_jmap();
+            }
+            if req.method() != axum::http::Method::POST {
+                return method_not_allowed();
+            }
+            let Ok(batch) = serde_json::from_slice::<jmapserver::server::ApiRequest>(body) else {
+                return text_error(400, "invalid request");
+            };
+            let response = jmapserver::server::run_batch(&state.jmap(), &batch);
+            json_response_raw(200, jmapserver::server::encode(&response))
+        })();
+        set_route_cors(
+            &mut res,
+            "GET, POST, OPTIONS",
+            "Authorization, Content-Type",
+        );
+        res
     }
 
     fn now_unix() -> i64 {
