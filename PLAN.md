@@ -513,8 +513,9 @@ HTTP 層（axum ルータ・CORS・SSE）と全体 difftest は **M6 に繰り�
 
 | M6t | JMAP 本体（session / api）と Store 構築 | `87c5d13` |
 
-残り: **M6u** — `/account/provision` `/account/delete`
-`/account/storage/purge-messages` `/admin/dashboard` `/metrics` `/domain/*`
+| M6u | アカウントのライフサイクル（provision / delete / purge） | `0eeedbd` |
+
+残り: **M6v** — `/admin/dashboard` `/metrics` `/domain/*`
 `/jmap/eventsource/` `/jmap/push/*`、
 および SPEC §2 のステップ 13/14（maintenance、SMTP リスナ）。
 `server_interop` の `the_unwired_routes_are_the_ones_named_here` が
