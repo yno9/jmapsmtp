@@ -503,11 +503,15 @@ HTTP 層（axum ルータ・CORS・SSE）と全体 difftest は **M6 に繰り�
 | M6o | アクティビティログ（`jmapserver::activity`） | `50b4474` |
 | M6p | `/setup` ページ（`setup_page`。逐語コピー + バイト比較） | `9cc1c6d` |
 
-**エンドポイントの移植は全部終わった。**
+| M6q | HTTP サーバ配線（`server` / `main`） | `fe50241` |
 
-残り: **M6q** — **ハンドラ配線 + 実 HTTP サーバ**（`gomux` にハンドラを載せ、
-`main` を起動シーケンス通りに組む）。
-これが入ると `just difftest` が oracle 対 Rust で意味を持つ。
+**エンドポイントの移植と、サーバの骨格は終わった。**
+
+残り: **M6r** — 各ハンドラを `server::dispatch` に接続する
+（現在は `/relay-info` と `/setup` のみ。他は 501）。
+`server_interop` の `the_unwired_routes_are_the_ones_named_here` が
+残作業を名前で列挙している。
+併せて SPEC §2 のステップ 8/9/11/13/14（handler と Store、maintenance、SMTP）。
 
 なお §4 の「ルーティングは axum」は M6d で**取り下げた**。
 二重登録 panic・サブツリー一致・リダイレクトが観測可能な挙動なので、
