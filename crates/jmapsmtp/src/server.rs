@@ -46,6 +46,12 @@ pub struct RelayState {
     pub metrics_token: String,
     /// Broadcasts state changes to event-source subscribers.
     pub hub: Arc<jmapserver::Hub>,
+    /// Resolves the TXT records that prove control of a custom domain.
+    ///
+    /// Injected rather than constructed inline so a test can answer without a
+    /// network — the alternative is a route whose only test is "does the
+    /// internet agree".
+    pub txt: Arc<dyn crate::dns::TxtResolver>,
     /// Outbound SMTP attempts, by result. Counters, so they only ever rise.
     smtp_sent: std::sync::atomic::AtomicU64,
     smtp_failed: std::sync::atomic::AtomicU64,
@@ -71,6 +77,7 @@ impl RelayState {
             admin_token: crate::bearer::token_from_env("ADMIN_TOKEN"),
             metrics_token: crate::bearer::token_from_env("METRICS_TOKEN"),
             hub: Arc::new(jmapserver::Hub::new()),
+            txt: Arc::new(NoDns),
             smtp_sent: std::sync::atomic::AtomicU64::new(0),
             smtp_failed: std::sync::atomic::AtomicU64::new(0),
             mux,
@@ -153,6 +160,13 @@ impl RelayState {
         self.mux.patterns()
     }
 
+    /// Install the live DNS client. Must be called from inside a runtime.
+    pub fn with_dns(self: &mut Arc<RelayState>) {
+        if let Some(state) = Arc::get_mut(self) {
+            state.txt = crate::dns::SystemDns::new();
+        }
+    }
+
     /// Record the outcome of one outbound send.
     pub fn record_smtp_outbound(&self, sent: bool) {
         use std::sync::atomic::Ordering;
@@ -170,6 +184,19 @@ impl RelayState {
             self.smtp_sent.load(Ordering::Relaxed),
             self.smtp_failed.load(Ordering::Relaxed),
         )
+    }
+}
+
+/// The resolver a relay has before one is installed.
+///
+/// Answers nothing, which refuses every ownership proof. Failing closed is the
+/// only safe default: a relay that resolved nothing but accepted anyway would
+/// hand out domains.
+struct NoDns;
+
+impl crate::dns::TxtResolver for NoDns {
+    fn lookup_txt(&self, _name: &str) -> Vec<String> {
+        Vec::new()
     }
 }
 
@@ -459,6 +486,8 @@ async fn dispatch(
         "/account/storage/purge-messages" => handlers::storage_purge(&state, &req),
         "/admin/dashboard" => handlers::admin_dashboard(),
         "/metrics" => handlers::metrics(&state),
+        "/domain/verify-token" => handlers::domain_verify_token(&state, &req),
+        "/domain/add" => handlers::domain_add(&state, &req, &body),
         _ => text_error(501, "not implemented"),
     }
 }
@@ -1298,6 +1327,131 @@ mod handlers {
             HeaderValue::from_static("text/plain; version=0.0.4; charset=utf-8"),
         );
         res
+    }
+
+    // ── bring-your-own domain ─────────────────────────────────────────────
+
+    /// The records an owner has to publish. Nothing here is privileged — a
+    /// public key record, this relay's hostname, and a token that only proves
+    /// the *asker* read the instructions. The provisioning secret is not in
+    /// it, and stays behind actual proof of control.
+    pub fn domain_verify_token(state: &RelayState, req: &Request<()>) -> Response<Body> {
+        let mut res = (|| {
+            let domain = query_param(req, "domain")
+                .unwrap_or_default()
+                .trim()
+                .to_lowercase();
+            if !crate::customdomain::valid_custom_domain(&domain) {
+                let e = crate::customdomain::DomainError::InvalidDomain;
+                return text_error(e.status(), e.message());
+            }
+            let (dkim_name, dkim_value) = domain_dkim(state, &domain);
+            let out = std::collections::BTreeMap::from([
+                ("txt_name", crate::customdomain::verify_txt_name(&domain)),
+                (
+                    "token",
+                    crate::customdomain::verify_token(&state.cfg, &domain),
+                ),
+                ("mx_target", state.cfg.hostname.clone()),
+                ("dkim_name", dkim_name),
+                ("dkim_value", dkim_value),
+            ]);
+            match jmap_types::go_json::to_vec(&out) {
+                Ok(body) => json_response(200, body),
+                Err(_) => text_error(500, "internal error"),
+            }
+        })();
+        set_route_cors(&mut res, "GET, OPTIONS", "");
+        res
+    }
+
+    /// Verify the TXT record is live, then register the domain.
+    ///
+    /// **Re-checked every time**, even for a domain already registered: a past
+    /// registration must not grant standing access to create accounts under it
+    /// forever. The provisioning secret is re-issued in the same response, to
+    /// whoever currently controls the DNS.
+    pub fn domain_add(state: &RelayState, req: &Request<()>, body: &[u8]) -> Response<Body> {
+        let mut res = (|| {
+            if req.method() != axum::http::Method::POST {
+                return method_not_allowed();
+            }
+            #[derive(serde::Deserialize)]
+            struct AddRequest {
+                #[serde(default)]
+                domain: String,
+            }
+            let Ok(request) = serde_json::from_slice::<AddRequest>(body) else {
+                return text_error(400, "invalid JSON");
+            };
+            let domain = request.domain.trim().to_lowercase();
+            if !crate::customdomain::valid_custom_domain(&domain) {
+                let e = crate::customdomain::DomainError::InvalidDomain;
+                return text_error(e.status(), e.message());
+            }
+
+            let expected = crate::customdomain::verify_token(&state.cfg, &domain);
+            let records = state
+                .txt
+                .lookup_txt(&crate::customdomain::verify_txt_name(&domain));
+            if !crate::customdomain::txt_proves_ownership(&records, &expected) {
+                let e = crate::customdomain::DomainError::NotVerified;
+                return text_error(e.status(), e.message());
+            }
+
+            let dir = state.data_dir.join("_domains").join(&domain);
+            if std::fs::create_dir_all(&dir).is_err() {
+                return text_error(500, "internal error");
+            }
+            let dom_cfg = crate::customdomain::registered_domain_config(&state.cfg, &domain);
+            let Ok(encoded) = jmap_types::go_json::to_vec(&dom_cfg) else {
+                return text_error(500, "internal error");
+            };
+            if crate::write_private(&dir.join("domain.json"), &encoded).is_err() {
+                return text_error(500, "internal error");
+            }
+            state
+                .dynamic_domains
+                .insert(domain.clone(), dom_cfg.clone());
+
+            let (dkim_name, dkim_value) = domain_dkim(state, &domain);
+            let out = std::collections::BTreeMap::from([
+                ("domain", domain.clone()),
+                ("mx_target", state.cfg.hostname.clone()),
+                ("dkim_name", dkim_name),
+                ("dkim_value", dkim_value),
+                ("provision_secret", dom_cfg.provision_secret.clone()),
+            ]);
+            match jmap_types::go_json::to_vec(&out) {
+                Ok(body) => json_response(200, body),
+                Err(_) => text_error(500, "internal error"),
+            }
+        })();
+        set_route_cors(&mut res, "POST, OPTIONS", "Content-Type");
+        res
+    }
+
+    /// The DKIM record for a custom domain, generating the key on first ask.
+    ///
+    /// `load_or_generate_key` **loads** an existing key, so asking twice — or
+    /// asking again after registration — never rotates one that is already
+    /// published in DNS.
+    fn domain_dkim(state: &RelayState, domain: &str) -> (String, String) {
+        let dir = state.data_dir.join("_domains").join(domain);
+        if std::fs::create_dir_all(&dir).is_err() {
+            return (String::new(), String::new());
+        }
+        match crate::dkim::load_or_generate_key(&dir) {
+            Ok(key) => {
+                let selector = crate::dkim::DEFAULT_SELECTOR;
+                let _ = crate::dkim::write_record_file(&dir, selector, domain, &key);
+                (
+                    format!("{selector}._domainkey.{domain}"),
+                    crate::dkim::public_key_record(&key),
+                )
+            }
+            Err(_) => (String::new(), String::new()),
+        }
     }
 
     fn now_unix() -> i64 {

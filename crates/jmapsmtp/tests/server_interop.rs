@@ -20,6 +20,7 @@ fn config_json(http_port: u16, smtp_port: u16) -> String {
         r##"{{"listen_addr":"127.0.0.1:{http_port}","smtp_port":{smtp_port},
             "base_url":"http://127.0.0.1:{http_port}","hostname":"t.invalid",
             "relay_label":"Biset","relay_color":"#123456",
+            "domain_verify_secret":"s3cret-shared-with-the-oracle",
             "domain":{{
               "a.test":{{"account":{{"alice":{{}}}}}},
               "open.test":{{"allow_provision":true}}
@@ -730,6 +731,51 @@ fn every_biset_metric_series_matches() {
         go_body.contains(r#"biset_accounts{domain="open.test"} 0"#),
         "a domain with no accounts still reports zero: {go_body}"
     );
+    ours.stop();
+}
+
+/// The custom-domain flow. `/domain/add` cannot be driven to success here —
+/// it needs a live TXT record on a domain nobody controls — so what is
+/// compared is the record set an owner is told to publish, and the refusal.
+#[test]
+fn the_custom_domain_records_and_refusals_match() {
+    let Some((o, ours)) = both(seed_accounts) else {
+        return;
+    };
+
+    for target in [
+        "/domain/verify-token?domain=y.jp",
+        "/domain/verify-token?domain=sub.example.com",
+        "/domain/verify-token?domain=Example.COM",
+        "/domain/verify-token?domain=",
+        "/domain/verify-token?domain=example",
+        "/domain/verify-token?domain=-bad.com",
+    ] {
+        compare(&o, &ours, target);
+    }
+
+    // Asking twice must not rotate the DKIM key: an owner who already
+    // published the record would silently start failing DKIM.
+    let (_, first, _) = o.get("/domain/verify-token?domain=y.jp");
+    let (_, again, _) = o.get("/domain/verify-token?domain=y.jp");
+    assert_eq!(first, again, "the oracle does not rotate");
+    let (_, ours_first, _) = ours.get("/domain/verify-token?domain=y.jp");
+    let (_, ours_again, _) = ours.get("/domain/verify-token?domain=y.jp");
+    assert_eq!(ours_first, ours_again, "neither does this port");
+
+    // The registration attempt: no TXT record exists, so both refuse with 412
+    // — the request is well formed and a precondition on the world is not met.
+    for body in [r#"{"domain":"y.jp"}"#, r#"{"domain":"not a domain"}"#] {
+        let (go_status, go_body) = o.post_json("/domain/add", body);
+        let (our_status, our_body) = oracle_harness::raw_post(ours.port, "/domain/add", body);
+        assert_eq!(our_status, go_status, "{body}: oracle said {go_body:?}");
+        assert_eq!(our_body, go_body, "{body}");
+    }
+    assert!(
+        !o.data_dir().join("_domains/y.jp/domain.json").exists(),
+        "an unverified domain must not be registered"
+    );
+
     ours.stop();
 }
 

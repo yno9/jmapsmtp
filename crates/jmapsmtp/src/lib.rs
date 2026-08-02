@@ -19,6 +19,7 @@ pub mod config;
 pub mod customdomain;
 pub mod devices;
 pub mod dkim;
+pub mod dns;
 pub mod gomux;
 pub mod handler;
 pub mod hooks;

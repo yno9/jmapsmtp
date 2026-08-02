@@ -235,6 +235,116 @@ async fn the_metrics_token_does_not_open_the_admin_routes() {
     assert_eq!(with("admin-secret", "/metrics").await, 401);
 }
 
+// ── bring-your-own domain ─────────────────────────────────────────────────
+
+/// A registration that succeeds — the half `server_interop` cannot reach,
+/// because it needs a live TXT record on a domain nobody controls.
+#[tokio::test]
+async fn a_verified_domain_is_registered_gated_and_never_open() {
+    struct Answers(String, String);
+    impl crate::dns::TxtResolver for Answers {
+        fn lookup_txt(&self, name: &str) -> Vec<String> {
+            if name == self.0 {
+                // Alongside unrelated records, as a real domain has.
+                vec!["v=spf1 -all".into(), self.1.clone()]
+            } else {
+                Vec::new()
+            }
+        }
+    }
+
+    let tmp = tempfile::tempdir().unwrap().keep();
+    let cfg: Config = serde_json::from_str(
+        r#"{"domain":{"a.test":{}},"hostname":"mx.a.test",
+            "domain_verify_secret":"s3cret"}"#,
+    )
+    .unwrap();
+    let expected = crate::customdomain::verify_token(&cfg, "y.jp");
+    let mut state = RelayState::with_tokens(cfg, tmp, "", "");
+    Arc::get_mut(&mut state).unwrap().txt = Arc::new(Answers(
+        crate::customdomain::verify_txt_name("y.jp"),
+        expected,
+    ));
+
+    let post = |state: Arc<RelayState>, body: &'static str| async move {
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/domain/add")
+            .body(Body::from(body))
+            .unwrap();
+        let res = app(state).oneshot(req).await.unwrap();
+        let status = res.status().as_u16();
+        let bytes = axum::body::to_bytes(res.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        (status, String::from_utf8_lossy(&bytes).into_owned())
+    };
+
+    let (status, body) = post(state.clone(), r#"{"domain":"y.jp"}"#).await;
+    assert_eq!(status, 200, "{body}");
+    let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(parsed["domain"], "y.jp");
+    assert_eq!(parsed["mx_target"], "mx.a.test");
+    assert_eq!(
+        parsed["provision_secret"],
+        crate::customdomain::provision_secret_for(&state.cfg, "y.jp"),
+        "re-issued to whoever currently controls the DNS"
+    );
+
+    // Registered, and **gated** — never open.
+    let registered = state.dynamic_domains.get("y.jp").expect("registered");
+    assert!(
+        !registered.allow_provision,
+        "one past registration must not open the domain forever"
+    );
+    assert_eq!(
+        crate::provision::may_provision(&registered, ""),
+        Err(crate::provision::Refusal::DomainNotOpen)
+    );
+    assert_eq!(
+        crate::provision::may_provision(&registered, &registered.provision_secret),
+        Ok(())
+    );
+
+    // …and on disk, so a restart restores it.
+    let on_disk = state.data_dir.join("_domains/y.jp/domain.json");
+    assert!(on_disk.exists());
+    let reloaded = crate::config::DynamicDomains::default();
+    reloaded.load(&state.data_dir);
+    assert_eq!(
+        reloaded.get("y.jp").map(|d| d.provision_secret),
+        Some(registered.provision_secret.clone()),
+        "a restart must not invalidate the secret already handed out"
+    );
+
+    // A domain whose record is not there is refused, even after another was
+    // registered successfully.
+    let (status, _) = post(state.clone(), r#"{"domain":"other.test"}"#).await;
+    assert_eq!(status, 412);
+    assert!(!state.data_dir.join("_domains/other.test").exists());
+}
+
+/// The default resolver answers nothing, so a relay that has not installed one
+/// refuses every proof. Failing closed is the only safe default: a relay that
+/// resolved nothing and accepted anyway would hand out domains.
+#[tokio::test]
+async fn a_relay_with_no_resolver_refuses_every_ownership_proof() {
+    let tmp = tempfile::tempdir().unwrap().keep();
+    let cfg: Config =
+        serde_json::from_str(r#"{"domain":{"a.test":{}},"domain_verify_secret":"s3cret"}"#)
+            .unwrap();
+    let state = RelayState::with_tokens(cfg, tmp, "", "");
+
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/domain/add")
+        .body(Body::from(r#"{"domain":"y.jp"}"#))
+        .unwrap();
+    let res = app(state.clone()).oneshot(req).await.unwrap();
+    assert_eq!(res.status().as_u16(), 412);
+    assert!(state.dynamic_domains.get("y.jp").is_none());
+}
+
 // ── opening the stores ────────────────────────────────────────────────────
 
 /// Every configured account gets a store and the single derived inbox.

@@ -38,6 +38,10 @@ async fn run() -> Result<(), String> {
     // 4. The relay-wide PGP key, from the environment.
     let state = RelayState::new(cfg, data_dir.clone());
 
+    // The live DNS client, for MX routing and custom-domain proofs.
+    let mut state = state;
+    state.with_dns();
+
     // 5. The dynamic domain registry — **before** the sweep below. A custom
     //    domain verified in an earlier run exists only in data/_domains/, so
     //    sweeping first deletes the mail of every account on it.
