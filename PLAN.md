@@ -539,11 +539,19 @@ HTTP 層（axum ルータ・CORS・SSE）と全体 difftest は **M6 に繰り�
 
 | M8a | difftest が oracle 対 Rust で green（`just check`） | `5454acb` |
 
-残り: **M8b** — ARC.md / README.md / MIGRATION.md、ベンチマーク。
-その後 **M8**（統合検証、ARC.md / README.md / MIGRATION.md、ベンチマーク）。
-`server_interop` の `the_unwired_routes_are_the_ones_named_here` が
-残作業を名前で列挙している。
-併せて SPEC §2 のステップ 8/9/11/13/14（handler と Store、maintenance、SMTP）。
+| M8b | ARC.md / MIGRATION.md / README.md、`just bench` | `83d8f21` `09d9b55` `f3264e7` |
+
+**M8 完了 — 移植は終わり。テスト 757 件（35 スイート）、difftest 3 モードとも green。**
+
+### M8b で見つかった残件
+
+1. **`Email/query`（1,000 通）が Go より 10〜20% 遅い**（`just bench` で 0.83〜0.88×）。
+   起動時間・常駐メモリ・小さいルートは移植側が上なので、
+   **ここだけ**。正しさの問題ではない。手を付けていない
+2. **本番相当での 24 時間動作**（M8 の完了条件のうち唯一未実施）。
+   biset クライアントを実際に繋いだ確認も未実施
+3. `cargo build --no-default-features` と `go build -tags noanchor` の
+   difftest 比較は**単体テストでは見ているが、difftest では走らせていない**
 
 なお §4 の「ルーティングは axum」は M6d で**取り下げた**。
 二重登録 panic・サブツリー一致・リダイレクトが観測可能な挙動なので、
