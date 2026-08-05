@@ -11,12 +11,27 @@ data/
 config.json
 *.pem
 *.key
+# .asc too: an OpenPGP private key is armoured, and `pgp-private.asc` below is
+# exactly that shape. Without this a real exported key committed as easily as
+# a public one.
+*.asc
 
 # ...except the differential harness's fixtures. These are throwaway keys,
 # generated once and committed on purpose: seeding both sides with the SAME
 # key is what makes DKIM signatures and TLS certs comparable at all. They are
-# never used outside `xtask difftest`.
-!xtask/fixtures/*.pem
+# never used outside the tests and `xtask difftest`.
+#
+# Named one by one rather than `!xtask/fixtures/*.pem`, because a pattern here
+# is a hole: it un-ignores a *future* file too, so a real key dropped in this
+# directory would be committed by the next `git add -A` without a word. These
+# three are already public (xtask/fixtures/README.md); nothing else should
+# join them by accident.
+!xtask/fixtures/dkim-key.pem
+!xtask/fixtures/smtp-tls-key.pem
+!xtask/fixtures/smtp-tls-cert.pem
+!xtask/fixtures/pgp-private.asc
+!xtask/fixtures/pgp-public.asc
+!xtask/fixtures/pgp-public-relay.asc
 
 # the Go reference implementation (oracle) — built from ~/go-jmapsmtp +
 # ~/go-jmapserver by `just oracle`. Never committed: it is a build product of
