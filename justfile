@@ -109,6 +109,14 @@ difftest-oracle *ARGS:
 difftest-selftest:
     cargo run -p xtask -- difftest --self-test
 
+# Time the oracle and this port over the same requests. Needs a release
+# build: benching target/debug against an optimised Go binary is not a
+# comparison. Deliberately NOT part of `check` — timings are noisy and a
+# machine having a bad minute must not fail the acceptance run.
+bench *ARGS: oracle
+    cargo build --release -p jmapsmtp
+    cargo run -p xtask -- bench {{ARGS}}
+
 # Print the normalisation filters: the complete list of what the two
 # implementations are allowed to disagree about.
 difftest-filters:

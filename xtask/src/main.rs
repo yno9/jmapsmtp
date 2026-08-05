@@ -9,6 +9,7 @@
 //! be green before a run against the Rust port proves anything — it is what
 //! establishes that the filters strip only genuine non-determinism.
 
+mod bench;
 mod difftest;
 
 use anyhow::{Result, bail};
@@ -27,6 +28,9 @@ fn main() -> Result<()> {
             keep: has(flags, "--keep"),
             self_test: has(flags, "--self-test"),
         }),
+        "bench" => bench::run(bench::Options {
+            iterations: value(flags, "--iterations").unwrap_or(200),
+        }),
         "help" | "--help" | "-h" => {
             help();
             Ok(())
@@ -40,6 +44,20 @@ fn main() -> Result<()> {
 
 fn has(flags: &[String], name: &str) -> bool {
     flags.iter().any(|f| f == name)
+}
+
+/// `--name=value` or `--name value`.
+fn value(flags: &[String], name: &str) -> Option<usize> {
+    let prefix = format!("{name}=");
+    for (i, f) in flags.iter().enumerate() {
+        if let Some(v) = f.strip_prefix(&prefix) {
+            return v.parse().ok();
+        }
+        if f == name {
+            return flags.get(i + 1).and_then(|v| v.parse().ok());
+        }
+    }
+    None
 }
 
 fn help() {
@@ -59,6 +77,11 @@ xtask — development tasks
                        mutation to be caught.
       --show-filters   Print the normalisation filters and exit.
       --keep           Keep the working directories even on success.
+
+  bench [--iterations N]
+
+      Time the Go oracle and this port over the same requests and report
+      both. Needs `cargo build --release`; refuses to bench a debug build.
 "
     );
 }

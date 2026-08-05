@@ -298,7 +298,7 @@ fn textwrap(s: &str, width: usize) -> Vec<String> {
 }
 
 /// The workspace root, found by walking up from this crate's manifest.
-fn workspace_root() -> Result<PathBuf> {
+pub fn workspace_root() -> Result<PathBuf> {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     manifest
         .parent()

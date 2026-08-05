@@ -77,6 +77,9 @@ Where this port deliberately differs, the difference is asserted to **still be
 there**: if the two sides ever agree, the test fails and says the divergence
 was not observed. That is what catches a fix being lost in a refactor.
 
+`just bench` times both binaries over the same requests. Not part of `just
+check` — timings are noisy and must not fail an acceptance run.
+
 ## Config
 
 Copy `config.example.json` to `config.json` next to the binary and edit. The

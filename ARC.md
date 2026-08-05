@@ -173,6 +173,13 @@ against the Go implementation **running**:
 
 `just check` runs all of it.
 
+`just bench` is the same idea applied to speed: both binaries booted from the
+identical fixture, driven over the same requests, reported side by side. It is
+**not** in `check` — timings are noisy, and a machine having a bad minute must
+not fail the acceptance run. On one idle machine the port is within ~1.1× of Go
+on every route that does comparable work. That is a smoke test for a gross
+regression, nothing more.
+
 ### Declared divergences
 
 Where this port deliberately differs, the difference is **asserted to still be

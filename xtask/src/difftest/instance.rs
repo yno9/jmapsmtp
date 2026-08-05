@@ -17,19 +17,37 @@ pub struct Running {
 
 impl Running {
     /// Spawn the relay and block until it answers HTTP.
+    ///
+    /// The tokens are left unset deliberately: with no token, Go's
+    /// `RegisterMetrics` and `RegisterAdmin` serve unauthenticated, which is
+    /// what lets the scenario reach `/metrics` without inventing a
+    /// credential — and what makes the resulting difference the evidence for
+    /// SPEC.md §11.13.
     pub fn start(inst: Instance) -> Result<Self> {
+        Self::start_with_tokens(inst, None)
+    }
+
+    /// Spawn with `ADMIN_TOKEN`/`METRICS_TOKEN` set to the same value on both
+    /// sides. Used by `xtask bench`, where an unset token means the two sides
+    /// do different work (Go serves the metrics, this port 401s) and the
+    /// timing would compare a page render against a rejection.
+    pub fn start_with_tokens(inst: Instance, tokens: Option<&str>) -> Result<Self> {
         let log_path = inst.dir.join("server.log");
         let log = std::fs::File::create(&log_path)?;
-        let child = Command::new(inst.dir.join("jmapsmtp"))
-            .current_dir(&inst.dir)
+        let mut cmd = Command::new(inst.dir.join("jmapsmtp"));
+        cmd.current_dir(&inst.dir)
             .stdout(Stdio::from(log.try_clone()?))
             .stderr(Stdio::from(log))
-            .stdin(Stdio::null())
-            // Left unset deliberately: with no token, RegisterMetrics and
-            // RegisterAdmin serve unauthenticated, which is what lets the
-            // scenario reach /metrics without inventing a credential.
-            .env_remove("METRICS_TOKEN")
-            .env_remove("ADMIN_TOKEN")
+            .stdin(Stdio::null());
+        match tokens {
+            Some(t) => {
+                cmd.env("METRICS_TOKEN", t).env("ADMIN_TOKEN", t);
+            }
+            None => {
+                cmd.env_remove("METRICS_TOKEN").env_remove("ADMIN_TOKEN");
+            }
+        }
+        let child = cmd
             .spawn()
             .with_context(|| format!("spawning relay in {}", inst.dir.display()))?;
 
