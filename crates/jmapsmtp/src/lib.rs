@@ -25,6 +25,7 @@ pub mod config;
 pub mod customdomain;
 pub mod delivery;
 pub mod devices;
+pub mod did_bind;
 pub mod dkim;
 pub mod dns;
 pub mod gomux;

@@ -367,6 +367,25 @@ pub fn raw_post_auth(port: u16, target: &str, body: &str, auth: &str) -> (u16, S
     (status, body)
 }
 
+/// An arbitrary method with a body and Basic Auth, returning the headers too.
+///
+/// `PUT /account/did` needs all four at once, and the narrower helpers above
+/// each drop one of them.
+pub fn raw_full(
+    port: u16,
+    method: &str,
+    target: &str,
+    body: Option<&str>,
+    basic_auth: Option<&str>,
+) -> (
+    u16,
+    String,
+    String,
+    std::collections::BTreeMap<String, String>,
+) {
+    raw_request_full(port, method, target, body, basic_auth)
+}
+
 /// The response headers, lowercased.
 pub fn raw_headers(port: u16, target: &str) -> std::collections::BTreeMap<String, String> {
     raw_request(port, target).3

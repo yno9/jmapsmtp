@@ -540,6 +540,7 @@ async fn dispatch(
         "/.well-known/jmap" => handlers::jmap_session(&state, &req),
         "/jmap/api/" => handlers::jmap_api(&state, &req, &body),
         "/account/provision" => handlers::account_provision(&state, &req, &body),
+        "/account/did" => handlers::account_did(&state, &req, &body),
         "/account/delete" => handlers::account_delete(&state, &req),
         "/account/storage/purge-messages" => handlers::storage_purge(&state, &req),
         "/admin/dashboard" => handlers::admin_dashboard(),
@@ -1173,6 +1174,63 @@ mod handlers {
     /// The device key **is** the credential: the vouch is verified and written
     /// before the account is registered, so there is no "create now, add a
     /// device later" gap for someone else to walk into.
+    /// `PUT /account/did` — bind a DID to the **authenticated** account.
+    ///
+    /// The account is taken from the credential and never from the body; see
+    /// `did_bind`'s header for why that is the whole security property here.
+    pub fn account_did(state: &RelayState, req: &Request<()>, body: &[u8]) -> Response<Body> {
+        let mut res = (|| {
+            if req.method() == axum::http::Method::OPTIONS {
+                return no_content();
+            }
+            if req.method() != axum::http::Method::PUT {
+                return method_not_allowed();
+            }
+            // Before the body is even looked at: an unauthenticated caller
+            // must not be able to tell a malformed request from a well-formed
+            // one, and Go authenticates first.
+            let Some((domain, localpart)) = authenticate(state, req) else {
+                return unauthorized();
+            };
+
+            let anchor = crate::anchor::anchor_ref(&state.cfg);
+            let request = match crate::did_bind::decide(anchor.is_configured(), body) {
+                Ok(r) => r,
+                Err(refusal) => return text_error(refusal.status(), refusal.message()),
+            };
+
+            // Go passes `r.Host` through to the anchor as part of the proof,
+            // so the signature covers which relay the binding was presented
+            // to. A missing Host would change what is signed, so it travels
+            // as the empty string rather than being substituted.
+            let host = req
+                .headers()
+                .get(header::HOST)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("")
+                .to_string();
+
+            let verdict = jmapserver::anchor::claim(
+                state.anchor.as_ref(),
+                &anchor,
+                &localpart,
+                &domain,
+                &request.did,
+                &jmapserver::anchor::BindingProof {
+                    sig: request.did_sig,
+                    ts: request.bind_ts,
+                    host,
+                },
+            );
+            match crate::did_bind::from_verdict(verdict) {
+                Some(refusal) => text_error(refusal.status(), refusal.message()),
+                None => no_content(),
+            }
+        })();
+        set_route_cors(&mut res, "PUT, OPTIONS", "Authorization, Content-Type");
+        res
+    }
+
     pub fn account_provision(state: &RelayState, req: &Request<()>, body: &[u8]) -> Response<Body> {
         let mut res = (|| {
             if req.method() != axum::http::Method::POST {

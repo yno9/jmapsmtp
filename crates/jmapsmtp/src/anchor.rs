@@ -22,12 +22,9 @@ impl HttpTransport {
         Arc::new(HttpTransport)
     }
 
-    /// The process-wide client.
-    ///
-    /// Built on first use and never dropped. `reqwest::blocking` owns a
-    /// background runtime, and dropping one inside an async context panics —
-    /// which every relay constructed in an async test would otherwise do,
-    /// whether or not it ever talked to an anchor.
+    /// The process-wide client. Built on first use and never dropped —
+    /// dropping one inside an async context panics, because it owns a
+    /// background runtime.
     fn client() -> &'static reqwest::blocking::Client {
         static CLIENT: std::sync::OnceLock<reqwest::blocking::Client> = std::sync::OnceLock::new();
         CLIENT.get_or_init(|| {
@@ -39,8 +36,45 @@ impl HttpTransport {
     }
 }
 
+/// Run a blocking HTTP call on a thread with **no tokio runtime attached**.
+///
+/// `reqwest::blocking` cannot be called from inside a runtime: both building a
+/// client and sending a request go through `wait::enter`, which drops a
+/// `Runtime` to probe for an async context, and that drop panics when blocking
+/// is not permitted where it happens. Every caller here is a synchronous
+/// decision handler running inside axum, so every call would be.
+///
+/// Whether it actually panics turns out to depend on the runtime **flavour** —
+/// a multi-thread runtime permits the drop and a current-thread one does not.
+/// The deployed relay is `#[tokio::main]`, i.e. multi-thread, and really does
+/// reach a live anchor and answer correctly; this was found by an interop test
+/// that built a current-thread runtime instead. That is not a difference worth
+/// depending on: it makes "does the relay panic" a property of how the caller
+/// built its runtime.
+///
+/// A thread per anchor call is affordable because anchor calls are rare — a
+/// provision, a device vouch, a DID bind — and each already blocks the caller
+/// for up to [`jmapserver::anchor::TIMEOUT`] either way. `scope` keeps the
+/// borrow of the arguments rather than forcing every caller to hand over owned
+/// copies.
+fn off_runtime<T: Send>(f: impl FnOnce() -> T + Send) -> T {
+    std::thread::scope(|s| s.spawn(f).join().expect("the HTTP call panicked"))
+}
+
 impl Transport for HttpTransport {
     fn send(
+        &self,
+        method: &str,
+        url: &str,
+        token: &str,
+        body: Option<&[u8]>,
+    ) -> Option<(u16, String)> {
+        off_runtime(|| self.send_blocking(method, url, token, body))
+    }
+}
+
+impl HttpTransport {
+    fn send_blocking(
         &self,
         method: &str,
         url: &str,

@@ -808,17 +808,19 @@ fn the_unwired_routes_are_the_ones_named_here() {
         return;
     };
 
-    // `/account/did` is mounted in every `anchor` build (routes.rs's ANCHOR)
-    // and has no arm in `dispatch`, so it answers 501 while the oracle serves
-    // it — `anchor_on.go`'s `registerDidUpdate`, which authenticates the
-    // caller and forwards the DID claim to the anchor.
+    // `/account/did` is wired now and compared against the oracle in
+    // `did_bind_interop`, which is where an anchored comparison belongs — this
+    // suite's oracle is anchorless.
     //
-    // This list was emptied prematurely, and because an empty array makes the
-    // loop below run zero times, nothing failed. It was found by deploying:
-    // the relay answered 501 on the one route biset needs to bind an identity.
-    // `/pkarr/` is the same gap but only appears when `anchor_url` is set,
-    // which no test config does, so it cannot be listed here yet.
-    let unwired = ["/account/did"];
+    // The list stays, emptied, and so does this warning: it was emptied once
+    // before while `/account/did` still answered 501, and **an empty array
+    // makes the loop below run zero times**, so the test went on looking green
+    // while asserting nothing. If you empty it again, check that the route you
+    // removed is compared somewhere that actually runs.
+    //
+    // `/pkarr/` is still unwired and cannot be listed here: it is only mounted
+    // when `anchor_url` is set, which this suite's config does not do.
+    let unwired: [&str; 0] = [];
 
     for target in unwired {
         let (our_status, _, _) = ours.get(target);
