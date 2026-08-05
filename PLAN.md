@@ -537,7 +537,9 @@ HTTP 層（axum ルータ・CORS・SSE）と全体 difftest は **M6 に繰り�
 
 **M7 完了 — SPEC §2 の起動シーケンスが全ステップ組み上がった。**
 
-残り: **M8** — 統合検証、ARC.md / README.md / MIGRATION.md、ベンチマーク。
+| M8a | difftest が oracle 対 Rust で green（`just check`） | `5454acb` |
+
+残り: **M8b** — ARC.md / README.md / MIGRATION.md、ベンチマーク。
 その後 **M8**（統合検証、ARC.md / README.md / MIGRATION.md、ベンチマーク）。
 `server_interop` の `the_unwired_routes_are_the_ones_named_here` が
 残作業を名前で列挙している。
