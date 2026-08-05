@@ -28,7 +28,7 @@ build-noanchor:
 # makes the reported totals lower than a green run's — count suites, not just
 # tests, when comparing two runs.
 test: interop
-    CRYPTENV_INTEROP=required STORE_INTEROP=required DISPATCH_INTEROP=required MIME_INTEROP=required DKIM_INTEROP=required AUTOCRYPT_INTEROP=required SMTP_INTEROP=required PGP_INTEROP=required DEVICES_INTEROP=required STARTUP_INTEROP=required MUX_INTEROP=required HANDLER_INTEROP=required PROVISION_INTEROP=required HOOKS_INTEROP=required DEVICES_ENDPOINT_INTEROP=required WKD_INTEROP=required SETUP_INTEROP=required CUSTOMDOMAIN_INTEROP=required STORAGE_INTEROP=required CONTACTS_INTEROP=required ADMIN_INTEROP=required ACTIVITY_INTEROP=required SERVER_INTEROP=required cargo test --workspace
+    CRYPTENV_INTEROP=required STORE_INTEROP=required DISPATCH_INTEROP=required MIME_INTEROP=required DKIM_INTEROP=required AUTOCRYPT_INTEROP=required SMTP_INTEROP=required PGP_INTEROP=required DEVICES_INTEROP=required STARTUP_INTEROP=required MUX_INTEROP=required HANDLER_INTEROP=required PROVISION_INTEROP=required HOOKS_INTEROP=required INBOUND_BUFFER_INTEROP=required DEVICES_ENDPOINT_INTEROP=required WKD_INTEROP=required SETUP_INTEROP=required CUSTOMDOMAIN_INTEROP=required STORAGE_INTEROP=required CONTACTS_INTEROP=required ADMIN_INTEROP=required ACTIVITY_INTEROP=required SERVER_INTEROP=required cargo test --workspace
 
 # Everything except the Go interop tests, for when the Go toolchain is absent.
 test-rust-only:

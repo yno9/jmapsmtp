@@ -190,6 +190,40 @@ async fn delivery_stops_at_the_storage_cap() {
     );
 }
 
+/// **A declared divergence (SPEC.md §11.17): mail is stored on arrival, so
+/// there is no queue to overflow.**
+///
+/// Go buffers inbound mail in a 256-slot channel and drains it only when a
+/// JMAP request arrives (`main.go`'s `bufCh` / `drainBuffer`). Past 256
+/// messages between requests, `bufferEmail` takes its `default` branch and
+/// **discards** the message — after the sender was already told 250. That is
+/// silent mail loss, so it is not reproduced.
+///
+/// 300 is chosen to sit past Go's 256 with no JMAP request anywhere in the
+/// test: under Go's design 44 of these would be gone.
+#[tokio::test]
+async fn more_than_256_messages_arriving_between_requests_are_all_stored() {
+    let state = one_account();
+    let backend = Delivery {
+        state: state.clone(),
+    };
+    let account = state.accounts.get("alice@a.test").unwrap();
+
+    for i in 0..300 {
+        backend.deliver(
+            "bob@x.test",
+            &["alice@a.test".into()],
+            &message(&format!("m{i}"), &format!("m{i}@x.test")),
+        );
+    }
+
+    assert_eq!(
+        account.store.all().len(),
+        300,
+        "every accepted message must be stored; Go would have dropped the          44 past its 256-slot buffer"
+    );
+}
+
 /// Delivery is recorded, and a failure is recorded as a failure — the log is
 /// how an operator sees mail arriving at all.
 #[tokio::test]

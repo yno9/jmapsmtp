@@ -13,6 +13,10 @@ pub struct Running {
     pub inst: Instance,
     child: Child,
     log_path: std::path::PathBuf,
+    /// Spawn to first answered request. `xtask bench` reports it; difftest
+    /// ignores it. Resolution is the poll interval below, so it is a coarse
+    /// number and the bench says so.
+    pub started_in: Duration,
 }
 
 impl Running {
@@ -55,8 +59,11 @@ impl Running {
             inst,
             child,
             log_path,
+            started_in: Duration::ZERO,
         };
+        let t = Instant::now();
         running.wait_ready()?;
+        running.started_in = t.elapsed();
         Ok(running)
     }
 
@@ -76,9 +83,17 @@ impl Running {
             if client.get(&url).send().is_ok() {
                 return Ok(());
             }
-            std::thread::sleep(Duration::from_millis(50));
+            // Short because `xtask bench` reports the elapsed time as the
+            // startup figure, and a 50ms interval quantises a ~50ms startup
+            // into two buckets. Costs difftest nothing.
+            std::thread::sleep(POLL_INTERVAL);
         }
         bail!("relay did not become ready within 20s:\n{}", self.log())
+    }
+
+    /// The relay's process id, for reading `/proc/<pid>/status`.
+    pub fn pid(&self) -> u32 {
+        self.child.id()
     }
 
     pub fn log(&self) -> String {
@@ -89,6 +104,8 @@ impl Running {
         s
     }
 }
+
+const POLL_INTERVAL: Duration = Duration::from_millis(2);
 
 impl Drop for Running {
     fn drop(&mut self) {

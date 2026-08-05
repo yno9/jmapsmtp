@@ -30,6 +30,7 @@ fn main() -> Result<()> {
         }),
         "bench" => bench::run(bench::Options {
             iterations: value(flags, "--iterations").unwrap_or(200),
+            messages: value(flags, "--messages").unwrap_or(1000),
         }),
         "help" | "--help" | "-h" => {
             help();
@@ -78,7 +79,7 @@ xtask — development tasks
       --show-filters   Print the normalisation filters and exit.
       --keep           Keep the working directories even on success.
 
-  bench [--iterations N]
+  bench [--iterations N] [--messages N]
 
       Time the Go oracle and this port over the same requests and report
       both. Needs `cargo build --release`; refuses to bench a debug build.

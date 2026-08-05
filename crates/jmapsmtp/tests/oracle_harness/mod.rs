@@ -16,6 +16,9 @@ use std::process::{Child, Command};
 pub struct Oracle {
     pub root: tempfile::TempDir,
     pub http_port: u16,
+    /// The port the oracle's SMTP listener binds. Needed by any test that
+    /// delivers mail rather than driving HTTP.
+    pub smtp_port: u16,
     child: Child,
 }
 
@@ -133,9 +136,10 @@ impl Oracle {
         std::os::unix::fs::symlink(&oracle, root.path().join(ORACLE_BIN)).unwrap();
 
         let http_port = free_port();
+        let smtp_port = free_port();
         std::fs::write(
             root.path().join("config.json"),
-            config_json(http_port, free_port()),
+            config_json(http_port, smtp_port),
         )
         .unwrap();
         seed(root.path());
@@ -189,6 +193,7 @@ impl Oracle {
         Some(Oracle {
             root,
             http_port,
+            smtp_port,
             child,
         })
     }

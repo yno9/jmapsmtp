@@ -104,8 +104,11 @@ preferences, and both are named at the call site:
 - **The dynamic domain registry loads before the orphan sweep.** A custom
   domain verified in an earlier run exists only in `data/_domains/`; sweeping
   first deletes the mail of every account on it.
-- **SMTP binds before HTTP.** A relay that accepts JMAP but not mail is worse
-  than one that is not up yet, because monitoring reads it as healthy.
+- **SMTP binds before HTTP**, and the bind is awaited. A relay that accepts
+  JMAP but not mail is worse than one that is not up yet, because monitoring
+  reads it as healthy. Go starts SMTP in a goroutine and serves HTTP from the
+  main one, so it has a window where exactly that is true — measured at
+  roughly one connect in three (SPEC.md §11.18).
 
 An account exists **iff** it has an `auth_token_hash` **or** a device key —
 never by `envelope.json`, which a third-party or DID-only account does not
@@ -174,11 +177,25 @@ against the Go implementation **running**:
 `just check` runs all of it.
 
 `just bench` is the same idea applied to speed: both binaries booted from the
-identical fixture, driven over the same requests, reported side by side. It is
-**not** in `check` — timings are noisy, and a machine having a bad minute must
-not fail the acceptance run. On one idle machine the port is within ~1.1× of Go
-on every route that does comparable work. That is a smoke test for a gross
-regression, nothing more.
+identical fixture, 1,000 messages delivered into each over SMTP, then the same
+requests timed on both. It is **not** in `check` — timings are noisy, and a
+machine having a bad minute must not fail the acceptance run.
+
+On one idle machine this port starts in about two-thirds of Go's time, sits on
+less memory, and is a little faster on the small routes — but **`Email/query`
+over 1,000 messages is 10–20% slower** (0.83–0.88× across runs). That is the
+one number worth chasing, and nothing has been done about it yet.
+
+Getting there took two corrections worth knowing about, because both made the
+bench report a number that meant nothing:
+
+- The fixture seeds no messages, so the first version timed `Email/query`
+  against an empty mailbox and called it "the store's sort and filter path".
+  It was measuring the same thing `relay-info` measures.
+- Delivering 1,000 in one connection left the oracle holding 256 (§11.17) and
+  this port holding 1,000 — two different benchmarks under one name. Delivery
+  is batched around Go's buffer now, and the mailbox count is checked against
+  what was sent before anything is timed.
 
 ### Declared divergences
 
@@ -193,6 +210,8 @@ are listed in SPEC.md §11; the ones that matter most:
 | §11.14 | Go's sealed stored copy leaves the HTML alternative in plaintext. |
 | §11.15 | Go's WKD serves the **relay's** key for a capitalised `?l=`, not the user's. |
 | §11.16 | Go's account metric and account listing disagree with each other. |
+| §11.17 | Go buffers inbound mail in a 256-slot channel drained only by a JMAP request, and **discards** the overflow after answering `250`. Here mail is stored on arrival. |
+| §11.18 | Go can answer JMAP before its mail port is bound. Here it cannot. |
 
 ---
 

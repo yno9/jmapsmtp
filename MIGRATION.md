@@ -86,6 +86,8 @@ that fails if the difference ever disappears.
 | **§11.16** | `biset_accounts` no longer counts `peers` or the domain registry, and `/admin/accounts` no longer lists `<domain>@_domains`. **Your account count will drop** by one per domain holding peer keys plus one per registered custom domain. It was inflated before. |
 | **§11.1** | `/tmp/jmapsmtp-last-{in,out}.eml` is written only with `"debug_dump_eml": true`. Go writes it always; it holds plaintext mail. |
 | **§11.2** | A malformed `envelope.json` is rejected on read rather than accepted and failing later. |
+| **§11.17** | Under a burst, Go **loses mail**: inbound messages go into a 256-slot buffer drained only when a JMAP request arrives, and anything past it is discarded after the sender was told `250`. Here mail is stored on arrival. You will not see this change — you will stop losing mail you never knew you were losing. |
+| **§11.18** | Go can answer JMAP for a moment before its SMTP port is bound; here the mail port is up first. If your health check tests HTTP only, it was briefly lying to you. |
 | **§11.11** | A message whose PGP markers are reversed no longer takes the process down. In Go this is a remote crash: one message stops the relay for every account. |
 
 Two smaller ones with no operational effect: map-iteration order is now stable
