@@ -77,7 +77,13 @@ pub fn run(opts: Options) -> Result<()> {
     let left = capture_side("oracle(A)", &work.join("a"), &left_bin, None)?;
     let right = capture_side(right_label, &work.join("b"), &right_bin, None)?;
 
-    let report = compare::compare(&left, &right);
+    // A declared difference is only expected when the two sides are different
+    // implementations. `--both-oracle` runs the oracle against itself.
+    let report = if opts.both_oracle {
+        compare::compare_same_implementation(&left, &right)
+    } else {
+        compare::compare(&left, &right)
+    };
     report.print();
 
     if !opts.keep {
@@ -136,7 +142,8 @@ fn self_test() -> Result<()> {
             &oracle,
             Some(m),
         )?;
-        let report = compare::compare(&baseline, &mutated);
+        // The self-test mutates the oracle and compares it with itself.
+        let report = compare::compare_same_implementation(&baseline, &mutated);
         if report.is_clean() {
             println!("  {m:?}: NOT DETECTED");
             undetected.push(m);
@@ -244,6 +251,7 @@ fn execute(
     };
 
     Ok(Capture {
+        divergence: step.divergence,
         name: step.name.to_string(),
         request: format!("{} {}", step.method, step.path),
         status,

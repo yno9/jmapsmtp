@@ -116,3 +116,8 @@ difftest-filters:
 
 # Everything that must hold before the harness is trusted.
 difftest-check: difftest-selftest difftest-oracle
+
+# The full acceptance run: the harness proves it can fail, the oracle agrees
+# with itself, and then this port is compared against it. The last of these was
+# deferred from M4 until the port served HTTP; it does now.
+check: lint test difftest-check difftest

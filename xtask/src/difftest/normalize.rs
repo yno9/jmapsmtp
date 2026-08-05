@@ -116,6 +116,17 @@ pub static FILTERS: LazyLock<Vec<Filter>> = LazyLock::new(|| {
             r"(?m)^\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2} ",
             "",
         ),
+        // **After** go-log-timestamp: until that has run, the Go line still
+        // starts with a timestamp and an anchored pattern matches only this
+        // port's side — which is exactly what happened first time.
+        Filter::new(
+            "binary-name",
+            "The line announcing the JMAP listener is prefixed with the \
+             program's own name. A Rust binary calling itself `go-jmap-smtp` \
+             would be worse than the difference.",
+            r"(?m)^(go-jmap-smtp|jmapsmtp): ",
+            "<binary>: ",
+        ),
         // ── the one thing the two sides are configured to differ in ───────
         Filter::new(
             "listen-port",

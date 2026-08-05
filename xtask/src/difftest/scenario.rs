@@ -19,6 +19,17 @@ pub enum Auth {
     Basic,
 }
 
+/// Which part of a response a declared difference is about.
+///
+/// An enum with one variant today, because `Status` is the only aspect a step
+/// currently declares. It is an enum rather than a bool so that adding `Body`
+/// — when a scenario step needs one — does not mean revisiting every call
+/// site to work out what the old flag meant.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Aspect {
+    Status,
+}
+
 /// How a response body is reduced before comparison.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum BodyMode {
@@ -37,6 +48,15 @@ pub struct Step {
     pub auth: Auth,
     pub body: Option<Value>,
     pub body_mode: BodyMode,
+    /// A deliberate difference: **what** must differ, and why.
+    ///
+    /// The aspect is named rather than left as "something about this step",
+    /// because a step can differ for more than one reason. `/metrics` differs
+    /// in its body regardless — the Go build exports Go-runtime collectors
+    /// this port has no counterpart for — and checking "are they identical"
+    /// there let a lost status fix pass unnoticed, which is exactly the
+    /// failure this mechanism exists to prevent.
+    pub divergence: Option<(Aspect, &'static str)>,
 }
 
 fn get(name: &'static str, path: &str, auth: Auth) -> Step {
@@ -47,6 +67,7 @@ fn get(name: &'static str, path: &str, auth: Auth) -> Step {
         auth,
         body: None,
         body_mode: BodyMode::Full,
+        divergence: None,
     }
 }
 
@@ -58,6 +79,7 @@ fn req(name: &'static str, method: &'static str, path: &str, auth: Auth, body: V
         auth,
         body: Some(body),
         body_mode: BodyMode::Full,
+        divergence: None,
     }
 }
 
@@ -88,6 +110,7 @@ pub fn steps() -> Vec<Step> {
             auth: Auth::None,
             body: None,
             body_mode: BodyMode::Full,
+            divergence: None,
         },
         // A route no handler is registered for. WrapCORS must still put CORS
         // headers on the 404 — go-jmapserver/server.go documents this as the
@@ -311,6 +334,14 @@ pub fn steps() -> Vec<Step> {
             auth: Auth::None,
             body: None,
             body_mode: BodyMode::MetricNames,
+            // The oracle serves /metrics to anyone when METRICS_TOKEN is
+            // unset; this port closes it. Asserted as a difference so the fix
+            // cannot be lost, and so a Go-side fix reports itself as a stale
+            // divergence rather than passing as a match.
+            divergence: Some((
+                Aspect::Status,
+                "§11.13 — an unset bearer token closes the route",
+            )),
         },
     ];
 

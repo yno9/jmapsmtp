@@ -14,6 +14,8 @@ pub struct Capture {
     pub status: u16,
     pub headers: Vec<(String, String)>,
     pub body: String,
+    /// Set when this step is a declared difference — see `scenario::Step`.
+    pub divergence: Option<(super::scenario::Aspect, &'static str)>,
 }
 
 /// Everything one instance produced.
@@ -92,6 +94,12 @@ pub enum Diff {
         left: String,
         right: String,
     },
+    /// A difference SPEC.md declares, that is no longer there.
+    StaleDivergence {
+        step: String,
+        aspect: super::scenario::Aspect,
+        reason: &'static str,
+    },
 }
 
 pub struct Report {
@@ -151,18 +159,81 @@ impl Report {
                     println!("── server log");
                     print_line_diff(l, left, r, right);
                 }
+                Diff::StaleDivergence {
+                    step,
+                    aspect,
+                    reason,
+                } => {
+                    println!("── declared difference not observed: {step} ({aspect:?})");
+                    println!("   {reason}");
+                    println!(
+                        "   the two sides now agree. Either the fix was lost, or the \n\
+                         other implementation was corrected — remove the declaration \n\
+                         only after checking which."
+                    );
+                }
             }
         }
     }
 }
 
 pub fn compare(left: &Side, right: &Side) -> Report {
+    compare_with(left, right, true)
+}
+
+/// As [`compare`], with the declared differences switched off.
+///
+/// `--both-oracle` and `--self-test` put the **same implementation** on both
+/// sides, where a declared difference is not expected to appear — it describes
+/// how this port differs from the oracle, not how the oracle differs from
+/// itself. Requiring it there would fail the self-check for the one reason
+/// that is not a fault.
+pub fn compare_same_implementation(left: &Side, right: &Side) -> Report {
+    compare_with(left, right, false)
+}
+
+fn compare_with(left: &Side, right: &Side, expect_divergences: bool) -> Report {
     let mut diffs = Vec::new();
 
     // Step counts always match: both sides replay the same scenario, and a
     // transport error aborts the run before it gets here.
     for (a, b) in left.steps.iter().zip(right.steps.iter()) {
         debug_assert_eq!(a.name, b.name);
+
+        // A declared difference is required to still be one. Agreement here
+        // means either the fix was lost or the other side was fixed, and both
+        // want a human to look.
+        if let Some((aspect, reason)) = a.divergence.filter(|_| expect_divergences) {
+            use super::scenario::Aspect;
+            // Only the named aspect is checked, and only it is exempted from
+            // the ordinary comparison — everything else about the step is
+            // still compared, so a second, undeclared difference is not
+            // hidden by the first.
+            let (differs, shown) = match aspect {
+                Aspect::Status => (
+                    a.status != b.status,
+                    format!(
+                        "{}: {} / {}: {}",
+                        left.label, a.status, right.label, b.status
+                    ),
+                ),
+            };
+            if !differs {
+                diffs.push(Diff::StaleDivergence {
+                    step: a.name.clone(),
+                    aspect,
+                    reason,
+                });
+            } else {
+                println!(
+                    "   declared difference at {} ({aspect:?}): {reason}",
+                    a.name
+                );
+                println!("     {shown}");
+            }
+            continue;
+        }
+
         if a.status != b.status {
             diffs.push(Diff::Status {
                 step: a.name.clone(),
@@ -215,10 +286,22 @@ pub fn compare(left: &Side, right: &Side) -> Report {
     // the "[smtp]" / "[setup]" / "[provision]" prefixes because operators
     // grep for them. It also catches a whole class of silent divergence —
     // work one side did at startup and the other skipped.
-    if left.log != right.log {
+    //
+    // Compared as a **set of lines**, not a sequence. Startup logs from
+    // concurrent work — the SMTP listener and the HTTP one come up together —
+    // and neither implementation orders them deterministically; the Go
+    // original writes its SMTP lines from a goroutine. What is a contract is
+    // that the same events are reported, and a line that only one side emits
+    // still shows up here.
+    let sorted = |log: &str| {
+        let mut lines: Vec<&str> = log.lines().filter(|l| !l.trim().is_empty()).collect();
+        lines.sort_unstable();
+        lines.join("\n")
+    };
+    if sorted(&left.log) != sorted(&right.log) {
         diffs.push(Diff::Log {
-            left: left.log.clone(),
-            right: right.log.clone(),
+            left: sorted(&left.log),
+            right: sorted(&right.log),
         });
     }
 

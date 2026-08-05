@@ -108,14 +108,16 @@ async fn run() -> Result<(), String> {
     // 14. SMTP, before the HTTP listener: a relay that accepts JMAP but not
     //     mail is worse than one that is not up yet, because monitoring reads
     //     it as healthy.
-    let smtp_addr = format!("0.0.0.0:{}", state.cfg.smtp_port());
-    let smtp = tokio::net::TcpListener::bind(&smtp_addr)
+    let smtp_port = state.cfg.smtp_port();
+    let smtp = tokio::net::TcpListener::bind(("0.0.0.0", smtp_port))
         .await
-        .map_err(|e| format!("smtp listen {smtp_addr}: {e}"))?;
-    println!("[smtp] listening on {smtp_addr}");
+        .map_err(|e| format!("smtp listen :{smtp_port}: {e}"))?;
     {
         let state = state.clone();
         tokio::spawn(async move {
+            // The STARTTLS line comes first, then the bound address — the
+            // order an operator reads them in, and the Go original's.
+            println!("[smtp] listening on :{smtp_port}");
             if let Err(e) = jmapsmtp::delivery::serve_smtp(smtp, state).await {
                 // Fatal for the relay: it is no longer receiving mail, and
                 // looking healthy would be worse than exiting.

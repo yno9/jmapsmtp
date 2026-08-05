@@ -1149,7 +1149,10 @@ mod handlers {
                 return method_not_allowed();
             }
             let Ok(batch) = serde_json::from_slice::<jmapserver::server::ApiRequest>(body) else {
-                return text_error(400, "invalid request");
+                // `bad request`, not `invalid request` — the exact string Go
+                // sends. Found by the differential harness, which is the only
+                // thing that would have.
+                return text_error(400, "bad request");
             };
             let response = jmapserver::server::run_batch(&state.jmap(), &batch);
             json_response_raw(200, jmapserver::server::encode(&response))
