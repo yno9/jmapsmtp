@@ -384,7 +384,7 @@ VacationResponse/get,set
 
 `just difftest-check` が 1 と 2 をまとめて走らせる。
 
-**【実績】完了 (`0b11dea`)。** 2 は当初から通ったが、それだけでは
+**【実績】完了 (`5ef227c`)。** 2 は当初から通ったが、それだけでは
 「何も比較していないハーネス」と区別がつかないため 1 を追加した（当初計画には無い）。
 詳細は JOURNAL.md 参照。
 
@@ -400,7 +400,7 @@ VacationResponse/get,set
 1. `envelope_test.go` の全ケースを Rust に移植して green
 2. **相互運用テスト**: Go 版が生成した `envelope.json` を Rust で `Unseal` でき、逆も可
 
-**【実績】完了 (`658e841`)。** Go テスト 10 件 + 定数ピン + 相互運用 5 件。
+**【実績】完了 (`d218fb2`)。** Go テスト 10 件 + 定数ピン + 相互運用 5 件。
 Go 版の `FromBytes` が無検証で、`POST /auth/signup` に `{}` を送るだけで
 **未認証でアカウントを永久に潰せる**バグを発見し、修正して移植した（SPEC.md §11.2）。
 
@@ -418,7 +418,7 @@ Go 版の `FromBytes` が無検証で、`POST /auth/signup` に `{}` を送る�
 2. **Rust が書いた `data/` を Go 版バイナリが起動時に読めて、同じ JMAP レスポンスを返す**
 3. `mimeparse_test.go` / `storage_test.go` / `contacts_test.go` を移植して green
 
-**【実績】完了 (`39ecc7f`)。** 1 と 2 は達成（相互運用テスト 4 件）。
+**【実績】完了 (`fbd8748`)。** 1 と 2 は達成（相互運用テスト 4 件）。
 3 は該当コード（MIME / storage / contacts）が M5・M7 なのでそちらへ繰り延べ。
 **Go の `encoding/json` が `<` `>` `&` を HTML エスケープする**ことを相互運用テストが
 発見し、`jmap_types::go_json` で対応（SPEC.md §4）。
@@ -438,7 +438,7 @@ Go 版の `FromBytes` が無検証で、`POST /auth/signup` に `{}` を送る�
    同じメソッド呼び出し列をそれぞれの `Dispatch` に通して結果 JSON を比較
 2. 変異テストで検出力を確認
 
-**【実績】完了 (`28967f2`)。** 47 呼び出し一致、宣言済み差異 1 件（§11.7）。
+**【実績】完了 (`3fd59b4`)。** 47 呼び出し一致、宣言済み差異 1 件（§11.7）。
 HTTP 層（axum ルータ・CORS・SSE）と全体 difftest は **M6 に繰り延べ**。
 `route_registration_test.go` 相当も M6。
 
@@ -453,13 +453,13 @@ HTTP 層（axum ルータ・CORS・SSE）と全体 difftest は **M6 に繰り�
 - `autocrypt.rs`: ヘッダ注入/解析、peer 鍵保存、`pgpEncryptInline`, `pgpMIMEWrapInline`
 
 **進捗**:
-- **M5a（MIME）完了 (`0de4327`)** — 17 件の corpus で Go と一致
-- **M5b（DKIM）完了 (`03592bf`)** — Go の検証器が Rust の署名を受理
-- **M5c（Autocrypt/PGP-MIME）完了 (`0f89e22`)** — 決定的 4 関数がバイト一致。
+- **M5a（MIME）完了 (`45a3e99`)** — 17 件の corpus で Go と一致
+- **M5b（DKIM）完了 (`36ebcd1`)** — Go の検証器が Rust の署名を受理
+- **M5c（Autocrypt/PGP-MIME）完了 (`c4f08ca`)** — 決定的 4 関数がバイト一致。
   **リモート DoS を発見**（SPEC §11.11）
-- **M5d（SMTP 受信サーバ）完了 (`e855d4a`)** — Go の `net/smtp` で配送できる
-- **M5e（SMTP 送信クライアント）完了 (`5544267`)** — 本物の go-smtp サーバが受理
-- **M5f（OpenPGP）完了 (`0205cf7`)** — 交差復号を両方向
+- **M5d（SMTP 受信サーバ）完了 (`a4f49b5`)** — Go の `net/smtp` で配送できる
+- **M5e（SMTP 送信クライアント）完了 (`dc5c71b`)** — 本物の go-smtp サーバが受理
+- **M5f（OpenPGP）完了 (`e429dc1`)** — 交差復号を両方向
 - **→ M5 完了。** 次は M6
 
 **完了条件**:
@@ -484,62 +484,62 @@ HTTP 層（axum ルータ・CORS・SSE）と全体 difftest は **M6 に繰り�
 
 | | 内容 | commit |
 |---|---|---|
-| M6a | 認証プリミティブ（`authtoken` / `diddht` / `devicekeys`） | `1259cf2` |
-| M6b | config パースと認証層（`config` / `auth_env`） | `0b2a9d6` |
-| M6c | 起動シーケンス（`startup`、孤児掃除は oracle と差分比較） | `263f307` |
-| M6d | ルート表と `ServeMux` 移植（`gomux` / `routes` / `bearer`） | `ce1e78d` |
-| M6e | handler の識別子・容量計算・エイリアス表（`handler`） | `cc22df7` |
-| — | DID アイデンティティモデルの確定（SPEC §10-A） | `8f92815` |
-| M6f | provision（`provision`。oracle の実エンドポイントと差分比較） | `f240fa6` |
-| M6g | Store フック（`hooks`。oracle の JMAP API 経由で保存結果を比較） | `1a10da1` |
+| M6a | 認証プリミティブ（`authtoken` / `diddht` / `devicekeys`） | `a6b8186` |
+| M6b | config パースと認証層（`config` / `auth_env`） | `9006f4f` |
+| M6c | 起動シーケンス（`startup`、孤児掃除は oracle と差分比較） | `0430c38` |
+| M6d | ルート表と `ServeMux` 移植（`gomux` / `routes` / `bearer`） | `00e8b84` |
+| M6e | handler の識別子・容量計算・エイリアス表（`handler`） | `b0e436a` |
+| — | DID アイデンティティモデルの確定（SPEC §10-A） | `dedbd37` |
+| M6f | provision（`provision`。oracle の実エンドポイントと差分比較） | `cf7ed67` |
+| M6g | Store フック（`hooks`。oracle の JMAP API 経由で保存結果を比較） | `aa6c72d` |
 
-| M6h | デバイス / セッションエンドポイント（`devices`） | `414cbc5` |
-| M6i | WKD と PGP 鍵配布（`wkd`） | `668ce1d` |
-| M6j | オンボーディング（`setup`。`/auth/*` `/relay-info`） | `fb76d8d` |
-| M6k | カスタムドメインと自己削除（`customdomain`） | `c121cda` |
-| M6l | ストレージ透明性（`jmapserver::storage`） | `c15f17a` |
-| M6m | DID 起点の連絡先キャッシュ（`jmapserver::contacts`） | `eaeefe5` |
-| M6n | 管理系とメトリクス（`jmapserver::admin`） | `2d5bddc` |
-| M6o | アクティビティログ（`jmapserver::activity`） | `50b4474` |
-| M6p | `/setup` ページ（`setup_page`。逐語コピー + バイト比較） | `9cc1c6d` |
+| M6h | デバイス / セッションエンドポイント（`devices`） | `bad538c` |
+| M6i | WKD と PGP 鍵配布（`wkd`） | `6ad1881` |
+| M6j | オンボーディング（`setup`。`/auth/*` `/relay-info`） | `3791c3e` |
+| M6k | カスタムドメインと自己削除（`customdomain`） | `1045ad7` |
+| M6l | ストレージ透明性（`jmapserver::storage`） | `07b17eb` |
+| M6m | DID 起点の連絡先キャッシュ（`jmapserver::contacts`） | `6f348a6` |
+| M6n | 管理系とメトリクス（`jmapserver::admin`） | `cea246d` |
+| M6o | アクティビティログ（`jmapserver::activity`） | `e266c68` |
+| M6p | `/setup` ページ（`setup_page`。逐語コピー + バイト比較） | `310b299` |
 
-| M6q | HTTP サーバ配線（`server` / `main`） | `fe50241` |
+| M6q | HTTP サーバ配線（`server` / `main`） | `293d65b` |
 
 **エンドポイントの移植と、サーバの骨格は終わった。**
 
-| M6r | WKD・オンボーディング・連絡先の配線（11 ルート） | `050a687` |
+| M6r | WKD・オンボーディング・連絡先の配線（11 ルート） | `a5b98d0` |
 
-| M6s | セッション・デバイス・ストレージ・管理系の配線（7 ルート） | `25c08b7` |
+| M6s | セッション・デバイス・ストレージ・管理系の配線（7 ルート） | `8d96b10` |
 
-| M6t | JMAP 本体（session / api）と Store 構築 | `87c5d13` |
+| M6t | JMAP 本体（session / api）と Store 構築 | `afb0836` |
 
-| M6u | アカウントのライフサイクル（provision / delete / purge） | `0eeedbd` |
+| M6u | アカウントのライフサイクル（provision / delete / purge） | `a340b87` |
 
-| M6v | 管理ダッシュボードと Prometheus メトリクス | `98722e6` |
+| M6v | 管理ダッシュボードと Prometheus メトリクス | `71de8c1` |
 
-| M6w | カスタムドメインと DNS クライアント（`dns`） | `b89daf1` |
+| M6w | カスタムドメインと DNS クライアント（`dns`） | `e9586f8` |
 
-| M6x | Web Push と event-source（`jmapserver::push`） | `fa30892` |
+| M6x | Web Push と event-source（`jmapserver::push`） | `c4d0e72` |
 
 **oracle が提供する全ルートの配線が完了した。**
 
-| M6y | 受信配送・SMTP リスナ・非活動掃除（`delivery` / `maintenance`） | `a018e61` |
+| M6y | 受信配送・SMTP リスナ・非活動掃除（`delivery` / `maintenance`） | `ba44b7e` |
 
-| M6z | 送信サブミッション（`submit` / `outbound`） | `db274e3` |
+| M6z | 送信サブミッション（`submit` / `outbound`） | `75b6e9a` |
 
 **M6 完了 — 受信と送信の両方が通るリレーになった。**
 
-| M7a | 受信 STARTTLS（`inbound_tls`） | `2b51178` |
+| M7a | 受信 STARTTLS（`inbound_tls`） | `defd9e3` |
 
-| M7b | identity anchor クライアント（`jmapserver::anchor` / `jmapsmtp::anchor`） | `506f0b2` |
+| M7b | identity anchor クライアント（`jmapserver::anchor` / `jmapsmtp::anchor`） | `87dce4f` |
 
-| M7c | Web Push 送信（`webpush`） | `de13ea7` |
+| M7c | Web Push 送信（`webpush`） | `c0558f8` |
 
 **M7 完了 — SPEC §2 の起動シーケンスが全ステップ組み上がった。**
 
-| M8a | difftest が oracle 対 Rust で green（`just check`） | `5454acb` |
+| M8a | difftest が oracle 対 Rust で green（`just check`） | `11f7906` |
 
-| M8b | ARC.md / MIGRATION.md / README.md、`just bench` | `83d8f21` `09d9b55` `f3264e7` |
+| M8b | ARC.md / MIGRATION.md / README.md、`just bench` | `1f719bc` `e888d9d` `0d371e9` |
 
 **M8 完了 — 移植は終わり。テスト 757 件（35 スイート）、difftest 3 モードとも green。**
 
