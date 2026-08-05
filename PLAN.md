@@ -533,9 +533,11 @@ HTTP 層（axum ルータ・CORS・SSE）と全体 difftest は **M6 に繰り�
 
 | M7b | identity anchor クライアント（`jmapserver::anchor` / `jmapsmtp::anchor`） | `506f0b2` |
 
-残り: **M7c** — Web Push 送信（RFC 8291 暗号化 + VAPID JWT）。
-`main.rs` の `NOT_YET_WIRED` が列挙している。
-その後 **M8**（統合検証、ARC.md / README.md / MIGRATION.md、ベンチマーク）。
+| M7c | Web Push 送信（`webpush`） | `de13ea7` |
+
+**M7 完了 — SPEC §2 の起動シーケンスが全ステップ組み上がった。**
+
+残り: **M8** — 統合検証、ARC.md / README.md / MIGRATION.md、ベンチマーク。
 その後 **M8**（統合検証、ARC.md / README.md / MIGRATION.md、ベンチマーク）。
 `server_interop` の `the_unwired_routes_are_the_ones_named_here` が
 残作業を名前で列挙している。
