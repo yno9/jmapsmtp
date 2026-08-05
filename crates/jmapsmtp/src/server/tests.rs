@@ -389,6 +389,190 @@ async fn a_push_subscription_is_scoped_to_the_credential() {
     );
 }
 
+// ── the identity anchor ───────────────────────────────────────────────────
+
+/// A transport that answers from a script and records what it was asked.
+#[cfg(feature = "anchor")]
+#[derive(Default)]
+struct ScriptedAnchor {
+    replies: parking_lot::Mutex<Vec<(u16, String)>>,
+    seen: parking_lot::Mutex<Vec<String>>,
+}
+
+#[cfg(feature = "anchor")]
+impl jmapserver::anchor::Transport for ScriptedAnchor {
+    fn send(
+        &self,
+        _method: &str,
+        url: &str,
+        _token: &str,
+        body: Option<&[u8]>,
+    ) -> Option<(u16, String)> {
+        self.seen.lock().push(format!(
+            "{url} {}",
+            body.map(|b| String::from_utf8_lossy(b).into_owned())
+                .unwrap_or_default()
+        ));
+        let mut replies = self.replies.lock();
+        if replies.is_empty() {
+            None
+        } else {
+            Some(replies.remove(0))
+        }
+    }
+}
+
+#[cfg(feature = "anchor")]
+fn anchored_state(replies: Vec<(u16, &str)>) -> (Arc<RelayState>, Arc<ScriptedAnchor>) {
+    let tmp = tempfile::tempdir().unwrap().keep();
+    let cfg: Config = serde_json::from_str(
+        r#"{"domain":{"open.test":{"allow_provision":true}},
+            "anchor_url":"https://anchor.test","anchor_token":"relay-secret"}"#,
+    )
+    .unwrap();
+    let mut state = RelayState::with_tokens(cfg, tmp, "", "");
+    let transport = Arc::new(ScriptedAnchor {
+        replies: parking_lot::Mutex::new(
+            replies
+                .into_iter()
+                .map(|(s, b)| (s, b.to_string()))
+                .collect(),
+        ),
+        seen: Default::default(),
+    });
+    state.set_anchor(transport.clone());
+    (state, transport)
+}
+
+#[cfg(feature = "anchor")]
+fn webvh_provision() -> String {
+    serde_json::json!({
+        "username": "carol", "domain": "open.test",
+        "did": "did:webvh:QmSCID111111111111111111111111111111111111111:biset.md:dids:carol",
+        "did_sig": "c2ln", "bind_ts": 1_785_000_000i64,
+        "device_pub_key": "DEVKEY", "device_label": "Laptop",
+        "device_vouch_ts": 1_785_000_000i64, "device_vouch_sig": "c2ln",
+    })
+    .to_string()
+}
+
+#[cfg(feature = "anchor")]
+async fn provision(state: Arc<RelayState>, body: String) -> (u16, String) {
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/account/provision")
+        .header(header::HOST, "mail.open.test:8443")
+        .body(Body::from(body))
+        .unwrap();
+    let res = app(state).oneshot(req).await.unwrap();
+    let status = res.status().as_u16();
+    let bytes = axum::body::to_bytes(res.into_body(), 1 << 20)
+        .await
+        .unwrap();
+    (status, String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// A did:webvh account is created once the anchor confirms the claim and the
+/// vouch. This is the branch that could not be tested before the client
+/// existed.
+#[cfg(feature = "anchor")]
+#[tokio::test]
+async fn an_anchored_provision_claims_then_vouches_then_writes_the_device() {
+    let (state, anchor) = anchored_state(vec![(201, ""), (200, "")]);
+    let (status, body) = provision(state.clone(), webvh_provision()).await;
+    assert_eq!(status, 201, "{body}");
+
+    let seen = anchor.seen.lock().clone();
+    assert_eq!(seen.len(), 2, "one claim, one vouch");
+    assert!(
+        seen[0].starts_with("https://anchor.test/identity/carol"),
+        "{}",
+        seen[0]
+    );
+    assert!(
+        seen[1].starts_with("https://anchor.test/devices/vouch"),
+        "{}",
+        seen[1]
+    );
+
+    // The claim carries the Host **this relay observed**, not the configured
+    // hostname — it is what the client signed against.
+    assert!(
+        seen[0].contains(r#""host":"mail.open.test:8443""#),
+        "{}",
+        seen[0]
+    );
+
+    let acct = crate::auth_env::account_dir(&state.data_dir, "open.test", "carol");
+    assert_eq!(
+        jmapserver::devicekeys::list_device_keys(&acct).len(),
+        1,
+        "the device key is written only after the anchor agrees"
+    );
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&body).unwrap()["did_bound"],
+        true
+    );
+}
+
+/// The claim happens **before** the vouch. A vouch accepted against a name
+/// this DID does not hold would bind a device to somebody else's mailbox.
+#[cfg(feature = "anchor")]
+#[tokio::test]
+async fn a_conflicting_claim_stops_before_the_vouch_is_even_asked() {
+    let (state, anchor) = anchored_state(vec![(409, "held by a different key")]);
+    let (status, _) = provision(state.clone(), webvh_provision()).await;
+    assert_eq!(
+        status,
+        crate::provision::Refusal::IdentityOwnedByAnother.status()
+    );
+    assert_eq!(anchor.seen.lock().len(), 1, "the vouch was never asked");
+    assert!(
+        !crate::auth_env::account_dir(&state.data_dir, "open.test", "carol").exists(),
+        "and nothing was written"
+    );
+}
+
+/// Never "proceed unanchored": an unbound name can be claimed by somebody else
+/// later, and the collision surfaces as the original owner losing their
+/// address.
+#[cfg(feature = "anchor")]
+#[tokio::test]
+async fn an_unreachable_anchor_refuses_the_provision() {
+    let (state, _) = anchored_state(vec![]);
+    let (status, _) = provision(state.clone(), webvh_provision()).await;
+    assert_eq!(status, 503, "not created unanchored");
+    assert!(!crate::auth_env::account_dir(&state.data_dir, "open.test", "carol").exists());
+}
+
+/// A rejected proof is 401 and an unreachable anchor is 503. Confusing them
+/// sends a user re-deriving a key that was never the problem.
+#[cfg(feature = "anchor")]
+#[tokio::test]
+async fn a_rejected_binding_is_distinguishable_from_an_unreachable_anchor() {
+    let (state, _) = anchored_state(vec![(401, "stale timestamp")]);
+    assert_eq!(provision(state, webvh_provision()).await.0, 401);
+
+    // And a relay the anchor refuses is 503, not 401 — the proof was never
+    // looked at.
+    let (state, _) = anchored_state(vec![(403, "unknown relay")]);
+    assert_eq!(provision(state, webvh_provision()).await.0, 503);
+}
+
+/// The claim can succeed and the vouch still fail; the account is not created.
+#[cfg(feature = "anchor")]
+#[tokio::test]
+async fn a_rejected_vouch_after_a_good_claim_creates_nothing() {
+    let (state, anchor) = anchored_state(vec![(201, ""), (401, "bad signature")]);
+    let (status, _) = provision(state.clone(), webvh_provision()).await;
+    assert_eq!(
+        status,
+        crate::provision::Refusal::DeviceVouchRejected.status()
+    );
+    assert_eq!(anchor.seen.lock().len(), 2);
+    assert!(!crate::auth_env::account_dir(&state.data_dir, "open.test", "carol").exists());
+}
+
 // ── bring-your-own domain ─────────────────────────────────────────────────
 
 /// A registration that succeeds — the half `server_interop` cannot reach,

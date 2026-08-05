@@ -12,6 +12,12 @@ pub const VERSION: &str = match option_env!("JMAPSMTP_VERSION") {
     None => "dev",
 };
 
+/// The identity anchor client. Absent in the `--no-default-features` build,
+/// which is this port's `go build -tags noanchor` — a relay with no anchor has
+/// no client for one rather than a stub that could be reached by mistake.
+#[cfg(feature = "anchor")]
+pub mod anchor;
+
 pub mod auth_env;
 pub mod autocrypt;
 pub mod bearer;

@@ -149,7 +149,4 @@ const NOT_YET_WIRED: &[&str] = &[
     // nothing hands it to smtp_out yet — `hooks` has the decisions, the
     // assembly is missing.
     "outbound submission: the OnSubmitEmail hook to the SMTP client",
-    // Claim, release and device vouches against the identity anchor. Every
-    // route that needs one answers 503 today.
-    "the anchor client",
 ];

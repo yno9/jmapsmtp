@@ -57,6 +57,10 @@ pub struct RelayState {
     pub txt: Arc<dyn crate::dns::TxtResolver>,
     /// Resolves mail exchangers for outbound delivery.
     pub mx: Arc<dyn crate::smtp_out::MxResolver>,
+    /// Talks to the identity anchor. Absent in the anchorless build, where
+    /// there is nothing to talk to.
+    #[cfg(feature = "anchor")]
+    pub anchor: Arc<dyn jmapserver::anchor::Transport>,
     /// Outbound SMTP attempts, by result. Counters, so they only ever rise.
     smtp_sent: std::sync::atomic::AtomicU64,
     smtp_failed: std::sync::atomic::AtomicU64,
@@ -91,6 +95,8 @@ impl RelayState {
             vapid: jmapserver::push::Vapid::new(&cfg_vapid.0, &cfg_vapid.1, &cfg_vapid.2),
             txt: Arc::new(NoDns),
             mx: Arc::new(NoDns),
+            #[cfg(feature = "anchor")]
+            anchor: crate::anchor::HttpTransport::new(),
             smtp_sent: std::sync::atomic::AtomicU64::new(0),
             smtp_failed: std::sync::atomic::AtomicU64::new(0),
             mux,
@@ -188,6 +194,18 @@ impl RelayState {
     /// restart are lost permanently — the user simply stops being notified.
     pub fn load_push_subscriptions(&self) {
         self.push.write().set_persist_dir(&self.data_dir);
+    }
+
+    /// Replace the anchor transport. For tests: the live one talks to a real
+    /// anchor, and the branch it guards is otherwise unreachable.
+    #[cfg(all(test, feature = "anchor"))]
+    pub fn set_anchor(
+        self: &mut Arc<RelayState>,
+        transport: Arc<dyn jmapserver::anchor::Transport>,
+    ) {
+        if let Some(state) = Arc::get_mut(self) {
+            state.anchor = transport;
+        }
     }
 
     /// Install the live DNS client. Must be called from inside a runtime.
@@ -894,11 +912,40 @@ mod handlers {
         match crate::devices::check_vouch(&state.cfg, &vouch, now_unix()) {
             Err(e) => text_error(e.status(), e.message()),
             Ok(crate::provision::VouchPath::Anchor) => {
-                // The anchor client is a milestone of its own; refusing is the
-                // honest answer until it exists, and it is the same status the
-                // Go handler uses when the anchor cannot be reached.
-                let e = crate::devices::DeviceError::AnchorUnavailable;
-                text_error(e.status(), e.message())
+                #[cfg(feature = "anchor")]
+                {
+                    let verdict = jmapserver::anchor::vouch_device(
+                        state.anchor.as_ref(),
+                        &crate::anchor::anchor_ref(&state.cfg),
+                        &localpart,
+                        &domain,
+                        &vouch.did,
+                        &jmapserver::anchor::DeviceVouchProof {
+                            device_pub_key: vouch.device_pub_key.clone(),
+                            label: vouch.label.clone(),
+                            sig: vouch.sig.clone(),
+                            ts: vouch.bind_ts,
+                        },
+                    );
+                    match crate::anchor::device_error(verdict) {
+                        Some(e) => text_error(e.status(), e.message()),
+                        None => match crate::devices::write_device(
+                            &state.data_dir,
+                            &domain,
+                            &localpart,
+                            &vouch,
+                            now_unix(),
+                        ) {
+                            Ok(()) => no_content(),
+                            Err(_) => text_error(500, "internal error"),
+                        },
+                    }
+                }
+                #[cfg(not(feature = "anchor"))]
+                {
+                    let e = crate::devices::DeviceError::AnchorUnavailable;
+                    text_error(e.status(), e.message())
+                }
             }
             Ok(_) => {
                 match crate::devices::write_device(
@@ -1170,17 +1217,69 @@ mod handlers {
                 crate::provision::VouchPath::Impossible => {
                     return refuse(crate::provision::Refusal::DidMethodNeedsAnchor);
                 }
-                // The anchor client is a milestone of its own. Refusing with
-                // the status Go uses for an unreachable anchor is the honest
-                // answer: from a client's side an unbuilt anchor and an
-                // unreachable one are the same condition.
-                //
-                // **Not covered by any test yet.** This branch needs
-                // `anchor_url` set, and an anchored relay would have to reach
-                // a real anchor for the comparison to mean anything — so it
-                // becomes testable when the anchor client lands, not before.
-                // Mutating it today changes nothing, which is why it is said
-                // here rather than left to look covered.
+                #[cfg(feature = "anchor")]
+                crate::provision::VouchPath::Anchor => {
+                    // Claim the name first. A vouch accepted against a name
+                    // this DID does not hold would bind a device to somebody
+                    // else's mailbox.
+                    let anchor = crate::anchor::anchor_ref(&state.cfg);
+                    let claimed = jmapserver::anchor::claim(
+                        state.anchor.as_ref(),
+                        &anchor,
+                        &username,
+                        &domain,
+                        &request.did,
+                        &jmapserver::anchor::BindingProof {
+                            sig: request.did_sig.clone(),
+                            ts: request.bind_ts,
+                            // Verbatim, as this relay observed it: it is what
+                            // the client signed against, and what stops a
+                            // signature captured elsewhere being replayed here.
+                            host: host_header(req),
+                        },
+                    );
+                    if let Some(refusal) = crate::anchor::provision_refusal(claimed) {
+                        return refuse(refusal);
+                    }
+
+                    let vouched = jmapserver::anchor::vouch_device(
+                        state.anchor.as_ref(),
+                        &anchor,
+                        &username,
+                        &domain,
+                        &request.did,
+                        &jmapserver::anchor::DeviceVouchProof {
+                            device_pub_key: request.device_pub_key.clone(),
+                            label: request.device_label.clone(),
+                            sig: request.device_vouch_sig.clone(),
+                            ts: request.device_vouch_ts,
+                        },
+                    );
+                    if crate::anchor::device_error(vouched).is_some() {
+                        return refuse(crate::provision::Refusal::DeviceVouchRejected);
+                    }
+                    let vouch = crate::devices::VouchRequest {
+                        username: username.clone(),
+                        domain: domain.clone(),
+                        did: request.did.clone(),
+                        device_pub_key: request.device_pub_key.clone(),
+                        label: request.device_label.clone(),
+                        bind_ts: request.device_vouch_ts,
+                        sig: request.device_vouch_sig.clone(),
+                    };
+                    if crate::devices::write_device(
+                        &state.data_dir,
+                        &domain,
+                        &username,
+                        &vouch,
+                        now_unix(),
+                    )
+                    .is_err()
+                    {
+                        return text_error(500, "internal error");
+                    }
+                }
+                #[cfg(not(feature = "anchor"))]
                 crate::provision::VouchPath::Anchor => {
                     return refuse(crate::provision::Refusal::AnchorUnavailable);
                 }
@@ -1685,6 +1784,20 @@ pub fn octet_stream(body: Vec<u8>) -> Response<Body> {
         HeaderValue::from_static("application/octet-stream"),
     );
     res
+}
+
+/// The `Host` header as the client sent it.
+///
+/// Forwarded verbatim to the anchor: it is what the client signed against, and
+/// this relay is the only party that saw it first-hand. Normalising it — or
+/// substituting the configured hostname — removes the protection against a
+/// signature captured on one relay being replayed against another.
+pub fn host_header(req: &Request<()>) -> String {
+    req.headers()
+        .get(header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_string()
 }
 
 /// One query parameter, percent-decoded.

@@ -9,6 +9,7 @@
 
 pub mod activity;
 pub mod admin;
+pub mod anchor;
 pub mod authtoken;
 pub mod contacts;
 pub mod devicekeys;
