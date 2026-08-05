@@ -4,11 +4,16 @@ JMAP mail server with SMTP relay, in Rust. Bridges incoming SMTP and outgoing
 SMTP delivery to a JMAP API consumed by [biset](https://github.com/yno9/biset)
 or any JMAP client.
 
-> **Status: port in progress.** This is a rewrite of
+> **Status: complete and unproven in production.** This is a rewrite of
 > [go-jmapsmtp](https://github.com/yno9/go-jmapsmtp) (plus the
 > [go-jmapserver](https://github.com/yno9/go-jmapserver) library it depends on)
-> from Go to Rust. It does not run yet. See [PLAN.md](PLAN.md) for the plan and
-> [JOURNAL.md](JOURNAL.md) for the work log — both in Japanese.
+> from Go to Rust. It builds, runs, and answers every route the Go
+> implementation does — `just difftest` compares the two binaries side by side
+> over 46 requests and reports no undeclared differences.
+>
+> It has not been run in a real deployment. See [MIGRATION.md](MIGRATION.md)
+> before switching one: a few behaviours differ on purpose, and one of them
+> (`ADMIN_TOKEN`) will change what your monitoring sees.
 
 ## Features
 
@@ -24,6 +29,15 @@ or any JMAP client.
 - DID identity binding via a standalone identity anchor (optional)
 - WKD (Web Key Directory) for public key discovery
 - BYO custom domains with DNS TXT ownership proof
+
+## Documentation
+
+| | |
+|---|---|
+| [ARC.md](ARC.md) | How it is put together, and why |
+| [MIGRATION.md](MIGRATION.md) | Switching a running deployment from the Go build |
+| [SPEC.md](SPEC.md) | The compatibility contract, and every deliberate difference (Japanese) |
+| [PLAN.md](PLAN.md) / [JOURNAL.md](JOURNAL.md) | The porting plan and work log (Japanese) |
 
 ## Layout
 
@@ -42,10 +56,26 @@ just build           # cargo build --workspace
 just build-noanchor  # equivalent of `go build -tags noanchor`
 just test
 just lint
+just check           # everything, including the comparison against Go
 ```
 
-`just --list` shows everything, including the tasks that build and check the Go
-reference implementation used for differential testing (`just oracle-check`).
+`just --list` shows the rest, including the tasks that build the Go reference
+implementation the differential tests run against.
+
+## How it is tested
+
+Nothing here is checked against a reading of the Go source. Every subsystem is
+compared against the Go implementation **running**:
+
+```sh
+just oracle          # build the Go binary from ~/go-jmapsmtp + ~/go-jmapserver
+just difftest        # run both, same 46 requests, compare bytes
+just difftest-check  # prove the harness can fail, and that the oracle agrees with itself
+```
+
+Where this port deliberately differs, the difference is asserted to **still be
+there**: if the two sides ever agree, the test fails and says the divergence
+was not observed. That is what catches a fix being lost in a refactor.
 
 ## Config
 
