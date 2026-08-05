@@ -217,6 +217,20 @@ are listed in SPEC.md §11; the ones that matter most:
 
 ## 9. What is not here
 
+- **`PUT /account/did` and `/pkarr/`.** Mounted in the `anchor` build, with no
+  arm in `dispatch`, so they answer 501. Go's `registerDidUpdate` authenticates
+  the caller and forwards the DID claim to the anchor; the client for that
+  already exists here (`anchor::claim`), the route does not.
+
+  Worth knowing *how this was missed*, because it is a failure of the method
+  the rest of this document argues for: `mux_interop` compares route **tables**
+  and both sides list the route; `server_interop`'s list of unwired routes had
+  been emptied, and an empty array makes its loop run zero times, so it
+  asserted nothing; and the difftest scenario never requests either path. Three
+  layers of comparison, and the gap sat in the seam between them. It was found
+  by deploying the relay and watching it answer 501.
+
+
 - **The anchor itself.** An external service; this relay is a client.
 - **Layer 2 encryption.** biset's client encrypts before submitting; the relay
   wraps and forwards.

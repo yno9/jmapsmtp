@@ -7,13 +7,19 @@ or any JMAP client.
 > **Status: complete and unproven in production.** This is a rewrite of
 > [go-jmapsmtp](https://github.com/yno9/go-jmapsmtp) (plus the
 > [go-jmapserver](https://github.com/yno9/go-jmapserver) library it depends on)
-> from Go to Rust. It builds, runs, and answers every route the Go
-> implementation does — `just difftest` compares the two binaries side by side
-> over 46 requests and reports no undeclared differences.
+> from Go to Rust. `just difftest` compares the two binaries side by side over
+> 46 requests and reports no undeclared differences.
 >
-> It has not been run in a real deployment. See [MIGRATION.md](MIGRATION.md)
-> before switching one: a few behaviours differ on purpose, and one of them
-> (`ADMIN_TOKEN`) will change what your monitoring sees.
+> **`PUT /account/did` is not implemented** — it answers 501 where Go binds a
+> DID to an account through the anchor, and `/pkarr/` does the same when an
+> anchor is configured. Everything that does not involve the anchor works,
+> including a real deployment serving JMAP over HTTPS. Since identity here
+> rests on the DID, a client that binds one cannot finish against this relay
+> yet.
+>
+> See [MIGRATION.md](MIGRATION.md) before switching a deployment: a few
+> behaviours differ on purpose, and one of them (`ADMIN_TOKEN`) will change
+> what your monitoring sees.
 
 ## Features
 

@@ -541,9 +541,24 @@ HTTP 層（axum ルータ・CORS・SSE）と全体 difftest は **M6 に繰り�
 
 | M8b | ARC.md / MIGRATION.md / README.md、`just bench` | `1f719bc` `e888d9d` `0d371e9` |
 
-**M8 完了 — 移植は終わり。テスト 757 件（35 スイート）、difftest 3 モードとも green。**
+**M8 完了 — ただし「移植は終わり」ではなかった（下記 0 番）。**
+テスト 757 件（35 スイート）、difftest 3 モードとも green。
 
-### M8b で見つかった残件
+### 残件
+
+0. **【最重要】`PUT /account/did` と `/pkarr/` が未実装（501）**。
+   `dispatch` に arm が無く、`_ => 501` に落ちている。
+   Go は `anchor_on.go` の `registerDidUpdate` で認証してから
+   anchor に DID クレームを転送する。**biset のアイデンティティは DID なので、
+   これが無いとクライアントは identity を bind できない。**
+
+   **見落とした理由を記録しておく** —
+   `mux_interop` は**ルート表**を比べるので両側にあって一致する。
+   `server_interop` の未配線リストは**空にされていて**、
+   空配列はループが 0 回なので**何も検査していなかった**。
+   difftest のシナリオはどちらのパスも叩かない。
+   3 層の比較の**継ぎ目**に落ちていた。
+   v2 に deploy して 501 が返って初めて分かった。
 
 1. **`Email/query`（1,000 通）が Go より 10〜20% 遅い**（`just bench` で 0.83〜0.88×）。
    起動時間・常駐メモリ・小さいルートは移植側が上なので、

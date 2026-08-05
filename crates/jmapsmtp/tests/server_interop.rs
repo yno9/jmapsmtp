@@ -808,10 +808,17 @@ fn the_unwired_routes_are_the_ones_named_here() {
         return;
     };
 
-    // Everything the oracle serves is now wired. The list is kept — emptied —
-    // rather than deleted, because it is where the next unwired route goes and
-    // the loop below is what proves this port is not quietly answering 501.
-    let unwired: [&str; 0] = [];
+    // `/account/did` is mounted in every `anchor` build (routes.rs's ANCHOR)
+    // and has no arm in `dispatch`, so it answers 501 while the oracle serves
+    // it — `anchor_on.go`'s `registerDidUpdate`, which authenticates the
+    // caller and forwards the DID claim to the anchor.
+    //
+    // This list was emptied prematurely, and because an empty array makes the
+    // loop below run zero times, nothing failed. It was found by deploying:
+    // the relay answered 501 on the one route biset needs to bind an identity.
+    // `/pkarr/` is the same gap but only appears when `anchor_url` is set,
+    // which no test config does, so it cannot be listed here yet.
+    let unwired = ["/account/did"];
 
     for target in unwired {
         let (our_status, _, _) = ours.get(target);
