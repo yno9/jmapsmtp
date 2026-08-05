@@ -182,9 +182,22 @@ requests timed on both. It is **not** in `check` — timings are noisy, and a
 machine having a bad minute must not fail the acceptance run.
 
 On one idle machine this port starts in about two-thirds of Go's time, sits on
-less memory, and is a little faster on the small routes — but **`Email/query`
-over 1,000 messages is 10–20% slower** (0.83–0.88× across runs). That is the
-one number worth chasing, and nothing has been done about it yet.
+less memory, and is faster on every route measured.
+
+`Email/query` over 1,000 messages was the exception, at 0.83× — **slower** than
+Go. The cause was a straight translation that costs the two languages very
+different amounts: `Store::all()` clones every message, and in Rust that clone
+is *deep*, a fresh allocation per header string and per map, where Go's copy of
+the same struct duplicates slice and string headers and not the bytes. Query
+wants only the ids. `Store::matching_ids` filters under the read lock and
+clones nothing else: 2.17ms → 0.70ms, and resident memory fell with it because
+a query no longer allocates the whole mailbox.
+
+The order it returns has to match `all()` exactly, ties included, since a
+client pages through it — both iterate the `BTreeMap` in key order and both
+sort **stably** on the negated timestamp. The test that pins this needed 60
+messages before an unstable sort would misorder any of them; at five it passed
+against a deliberately broken sort.
 
 Getting there took two corrections worth knowing about, because both made the
 bench report a number that meant nothing:

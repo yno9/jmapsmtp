@@ -419,6 +419,36 @@ impl Store {
         all
     }
 
+    /// The ids of every message `keep` accepts, in the same order [`all`]
+    /// returns them.
+    ///
+    /// `all()` clones every message, and in Rust that clone is **deep** — a
+    /// fresh allocation for every header string, every body value and every
+    /// map in it. Go's `All()` copies the struct, which for a Go string or
+    /// slice is a header and not the bytes, so the same code costs it far
+    /// less. `Email/query` wants nothing but the ids, and for a
+    /// 1,000-message mailbox that was a thousand deep clones to produce a
+    /// list of ids.
+    ///
+    /// The order has to match `all()` exactly, ties included: both iterate
+    /// `msgs` in `BTreeMap` order and both use a **stable** sort on the
+    /// negated key, so two messages with the same `receivedAt` come back in
+    /// id order on either path. A client pages through this.
+    ///
+    /// `keep` runs while the read lock is held and must not call back into
+    /// the store.
+    pub fn matching_ids(&self, keep: impl Fn(&Email) -> bool) -> Vec<Id> {
+        let guard = self.inner.read();
+        let mut hits: Vec<(::time::OffsetDateTime, &Id)> = guard
+            .msgs
+            .values()
+            .filter(|m| keep(m))
+            .map(|m| (sort_key(m), &m.id))
+            .collect();
+        hits.sort_by_key(|(k, _)| std::cmp::Reverse(*k));
+        hits.into_iter().map(|(_, id)| id.clone()).collect()
+    }
+
     /// Apply a `keywords/*` patch and persist it.
     ///
     /// An unknown id is a no-op, not an error — the Go original returns nil

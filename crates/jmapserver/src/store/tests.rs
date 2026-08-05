@@ -600,3 +600,64 @@ fn identities_persist() {
     let store = Store::open(dir.path()).unwrap();
     assert_eq!(store.identities(), vec![one]);
 }
+
+// ── matching_ids must be all() with the clone removed ─────────────────────
+
+/// The optimisation is only safe if the order is identical, ties included.
+/// Two messages sharing a `receivedAt` are ordered by the `BTreeMap`'s key on
+/// both paths because both sorts are stable — this pins that, since a client
+/// pages through the result and a reshuffle loses or repeats a row.
+#[test]
+fn matching_ids_returns_exactly_the_ids_all_returns() {
+    let dir = tmp();
+    let store = Store::open(dir.path()).unwrap();
+    // Deliberately colliding timestamps: without ties this would pass for a
+    // sort that is not stable at all.
+    // 60 messages over 3 timestamps: 20 ties per bucket, which is past the
+    // point where an unstable sort keeps insertion order by accident.
+    for i in 0..60 {
+        store
+            .put(Email {
+                id: Id::from(format!("m{i:03}").as_str()),
+                received_at: Some(JmapTime::from_raw(
+                    [
+                        "2026-08-01T00:00:00Z",
+                        "2026-08-02T00:00:00Z",
+                        "2026-08-03T00:00:00Z",
+                    ][i % 3],
+                )),
+                ..Default::default()
+            })
+            .unwrap();
+    }
+
+    let via_all: Vec<Id> = store.all().into_iter().map(|m| m.id).collect();
+    let via_ids = store.matching_ids(|_| true);
+    assert_eq!(via_ids, via_all, "the two paths must agree on order");
+    assert_eq!(via_ids.len(), 60);
+}
+
+/// A filter that rejects everything, and one that rejects nothing, are the two
+/// ends the query path relies on.
+#[test]
+fn matching_ids_applies_the_predicate() {
+    let dir = tmp();
+    let store = Store::open(dir.path()).unwrap();
+    for id in ["a", "b", "c"] {
+        store.put(msg(id)).unwrap();
+    }
+    assert!(store.matching_ids(|_| false).is_empty());
+    assert_eq!(store.matching_ids(|_| true).len(), 3);
+    assert_eq!(
+        store.matching_ids(|m| m.id == Id::from("b")),
+        vec![Id::from("b")]
+    );
+}
+
+/// An empty store is what a fresh account hits on first login.
+#[test]
+fn matching_ids_on_an_empty_store_is_empty_not_a_panic() {
+    let dir = tmp();
+    let store = Store::open(dir.path()).unwrap();
+    assert!(store.matching_ids(|_| true).is_empty());
+}

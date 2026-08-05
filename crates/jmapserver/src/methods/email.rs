@@ -78,21 +78,17 @@ struct QueryFilter {
 pub fn query(store: &Store, account_id: &Id, args: &Value) -> MethodResult {
     let req: QueryArgs = serde_json::from_value(args.clone()).unwrap_or_default();
 
-    // Store::all is already newest-first; the filter preserves that order,
-    // which is the order clients render.
-    let filtered: Vec<Id> = store
-        .all()
-        .into_iter()
-        .filter(|m| match &req.filter {
-            None => true,
-            Some(f) => {
-                (f.in_mailbox.is_empty()
-                    || m.mailbox_ids.get(&Id::from(f.in_mailbox.as_str())) == Some(&true))
-                    && (f.text.is_empty() || matches_text(m, &f.text))
-            }
-        })
-        .map(|m| m.id)
-        .collect();
+    // Newest-first, and the filter preserves that order — it is the order
+    // clients render. `matching_ids` rather than `all()` because this needs
+    // only the ids and `all()` deep-clones every message to produce them.
+    let filtered: Vec<Id> = store.matching_ids(|m| match &req.filter {
+        None => true,
+        Some(f) => {
+            (f.in_mailbox.is_empty()
+                || m.mailbox_ids.get(&Id::from(f.in_mailbox.as_str())) == Some(&true))
+                && (f.text.is_empty() || matches_text(m, &f.text))
+        }
+    });
 
     let total = filtered.len();
     let start = req.position.max(0) as usize;
