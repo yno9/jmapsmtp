@@ -10,6 +10,119 @@
 
 ---
 
+## 2026-08-06 — M9（`/account/did` と `/pkarr/`）完了 (`4ae61df` / `7ce37ee`)
+
+**deploy して初めて見つかった。** v2 に立てた試験リレーに anchor を繋いだら、
+`/account/did` が **501** を返した。Go は `anchor_on.go` の `registerDidUpdate`
+で認証してから anchor に DID クレームを転送する。移植側は `dispatch` に
+arm が無く `_ => 501` に落ちていた。`/pkarr/` も同じ。
+
+### 3 層の比較が、それぞれ別の理由で見逃していた
+
+- `mux_interop` は**ルート表**を比較する。両側に存在するので一致し、
+  **ハンドラについては何も言わない**
+- `server_interop` の未配線リストは**空にされていた**。
+  `let unwired: [&str; 0] = []` は**ループが 0 回**なので、
+  緑に見えて**何も検査していなかった**。
+  空にしたとき "Everything the oracle serves is now wired" と
+  コメントまで書いている
+- difftest のシナリオはどちらのパスも叩かない
+
+**継ぎ目に落ちていた。**
+
+### 根本原因は「anchor 有効時の表面を一度も比較していなかった」こと
+
+これまでの interop は**全部 anchorless の oracle** だった。
+だから穴を塞ぐのに、テストを 1 本足すのではなく
+**無かった層そのもの**を作った — `did_bind_interop` が
+スタブ anchor を立てて**両実装をそこに向ける**。
+
+スタブは**リクエスト中の DID から**応答を決める。
+呼ばれた順序でスクリプトすると、
+**どちらが先に走ったかで結果が変わる**比較になってしまう。
+
+anchorless の組も走らせている。
+**判定順序は anchorless でしか観測できない**（anchor があると
+「anchor が無い」の分岐に到達しない）。
+そしてそこだけが「Go のソースを読んで書いた」箇所だったので、
+oracle に聞いて確定させた。
+
+---
+
+### 途中で見つけたバグ 1: anchor 呼び出しが runtime 依存で panic する
+
+`reqwest::blocking` は async コンテキスト検出のために `Runtime` を drop する。
+その drop は「blocking が許されない場所」で panic する。
+
+**multi-thread では発火しない。** 本番は `#[tokio::main]`（multi-thread）なので、
+**v2 の稼働バイナリは実際に生きた anchor と喋って正しく答えていた** —
+コードを変える前に実機で確認した。
+
+だが「panic するかが**呼び出し側の runtime の作り方**次第」は
+残す価値のない性質なので、`anchor::off_runtime` で
+runtime の付いていないスレッドに出した。
+
+**テストの fixture は current_thread のままにした。**
+厳しい方を捨てると、再発を検出できなくなる。
+
+### 途中で見つけたバグ 2: `just difftest` が移植側を再ビルドしない
+
+古い `target/debug/jmapsmtp` と新しい oracle を比較して、
+**ソース上では既に直っている差分**を報告してきた。
+
+危険なのは逆方向 —— **古いバイナリが通ってしまう**方 —— なので
+`difftest: build` の依存を足した。
+
+### スタブが Go のリクエストを読めていなかった
+
+`/pkarr/` の PUT 比較で「oracle が空の body を転送している」ように見えた。
+**転送しているバイトは同じで、フレーミングが違った** —
+Go は `r.Body` を `http.NewRequest` に渡すので長さが分からず **chunked**、
+移植側はバッファして **Content-Length**。
+スタブが Content-Length しか読まないので、
+**片側だけ空に見えて、スタブ自身の差分を報告していた**。
+
+スタブに chunked を読ませた。回避しなかったのは、
+**片側のリクエストを読めない fixture は、2 つの実装ではなく
+「実装と誤解」を比べている**から。
+
+応答本文には **UTF-8 として不正なバイト**を入れてある。
+blob をテキストとして decode する実装があれば、
+fixture がたまたま ASCII だったせいで通る、ということが起きない。
+
+---
+
+### 変異テスト
+
+`/account/did`: conflict→400 / 認証をボディ解析の後へ / CORS メソッド変更 —— すべて赤。
+順序入れ替えは lib が捕捉、anchorless 組を足した後は interop も捕捉
+（足す前はすり抜けた。**それがこの組を作った理由**）。
+
+`/pkarr/`: キー検査とメソッド検査の順序入れ替え
+（不正キーはどう叩かれても 404。405 にすると**パスの存在を教えてしまう**）/
+404→400 / Content-Type を引き継がない —— すべて赤。
+
+### 変異テスト中に自分でやらかした
+
+`git checkout` で変異を戻したら、**未コミットのハンドラごと消えた**。
+以降は**変異前にコミットする**。
+
+### 実機確認
+
+```
+PUT /account/did  {}                        → 400 did required
+                  {"did":...}               → 400 did_sig required
+                  {"did":...,"did_sig":...} → 401 did binding rejected
+   （anchor のログ: binding timestamp out of window ＝ 本物が判定している）
+GET /pkarr/probekey → 400 "invalid key"
+   anchor に直接叩いた応答と **status/Content-Type/本文が完全一致**
+```
+
+**oracle が出すルートは全部埋まった。** 780 件 / 36 スイート、
+difftest 49 steps 差分なし。
+
+---
+
 ## 2026-08-05 — M8b（ドキュメントとベンチ）完了 = **M8 完了** (`1f719bc` / `e888d9d` / `0d371e9`)
 
 ARC.md・MIGRATION.md・README.md と `just bench`。
