@@ -38,9 +38,27 @@ impl crate::smtp_in::Backend for Delivery {
                 }
             }
         }
-        // One notification for the batch: the event carries no payload, so a
+        // One wake-up for the batch: the event carries no payload, so a
         // client woken once fetches everything that arrived.
         self.state.hub.notify();
+
+        // …and one push per account that received something, for clients that
+        // are not holding an event-source stream open. Spawned because the
+        // push services are remote and a slow one must not hold the SMTP
+        // session open — the sender is waiting on that.
+        let mut pushed: Vec<String> = Vec::new();
+        for rcpt in rcpts {
+            if let Some(account) = self.state.accounts.resolve(rcpt)
+                && !pushed.contains(&account.email)
+            {
+                pushed.push(account.email.clone());
+                let state = self.state.clone();
+                let id = jmap_types::Id::from(account.email.as_str());
+                tokio::spawn(async move {
+                    crate::webpush::notify(&state, &id).await;
+                });
+            }
+        }
     }
 }
 

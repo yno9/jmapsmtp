@@ -139,14 +139,9 @@ async fn run() -> Result<(), String> {
         .map_err(|e| format!("serve: {e}"))
 }
 
-/// What the startup sequence still does not do.
+/// Sending Web Push needs the subscription registry loaded, which step 8 does.
+/// Nothing else in SPEC.md §2 is missing.
 ///
-/// Named here rather than left as an absence, so the gap is visible from the
-/// entry point rather than only from a plan.
-#[allow(dead_code)]
-const NOT_YET_WIRED: &[&str] = &[
-    // The stored copy is sealed and the message is put in the store, but
-    // nothing hands it to smtp_out yet — `hooks` has the decisions, the
-    // assembly is missing.
-    "outbound submission: the OnSubmitEmail hook to the SMTP client",
-];
+/// What remains is M8: end-to-end verification against a live deployment, the
+/// documentation, and benchmarks.
+const _: () = ();

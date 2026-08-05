@@ -1,4 +1,8 @@
 //! Inbound delivery and the maintenance sweep, driven through the real types.
+//!
+//! The delivery tests are async because `deliver` spawns the push
+//! notification. Guarding that spawn instead would let them pass without the
+//! push path ever running, which is the opposite of what a test is for.
 
 use super::*;
 use crate::config::Config;
@@ -30,8 +34,8 @@ fn message(subject: &str, message_id: &str) -> Vec<u8> {
 /// An address that is not served here is still answered `250` and dropped.
 /// Rejecting at RCPT would tell anyone who can reach port 25 which addresses
 /// exist.
-#[test]
-fn an_unknown_recipient_is_not_accepted_but_is_not_rejected_either() {
+#[tokio::test]
+async fn an_unknown_recipient_is_not_accepted_but_is_not_rejected_either() {
     let backend = Delivery {
         state: one_account(),
     };
@@ -55,8 +59,8 @@ fn an_unknown_recipient_is_not_accepted_but_is_not_rejected_either() {
 
 // ── storing ──────────────────────────────────────────────────────────────
 
-#[test]
-fn a_delivered_message_is_stored_and_readable() {
+#[tokio::test]
+async fn a_delivered_message_is_stored_and_readable() {
     let state = one_account();
     let backend = Delivery {
         state: state.clone(),
@@ -76,8 +80,8 @@ fn a_delivered_message_is_stored_and_readable() {
 
 /// The id comes from the RFC Message-ID, so a retry or a second MX overwrites
 /// rather than duplicating.
-#[test]
-fn redelivering_the_same_message_overwrites_rather_than_duplicating() {
+#[tokio::test]
+async fn redelivering_the_same_message_overwrites_rather_than_duplicating() {
     let state = one_account();
     let backend = Delivery {
         state: state.clone(),
@@ -120,8 +124,8 @@ fn redelivering_the_same_message_overwrites_rather_than_duplicating() {
 }
 
 /// An alias delivers into the account it points at, not one of its own.
-#[test]
-fn an_alias_delivers_into_its_primary_account() {
+#[tokio::test]
+async fn an_alias_delivers_into_its_primary_account() {
     let state = one_account();
     let backend = Delivery {
         state: state.clone(),
@@ -145,8 +149,8 @@ fn an_alias_delivers_into_its_primary_account() {
 
 /// A message that will not parse is dropped rather than stored empty — an
 /// entry with no headers and no body looks like mail arrived.
-#[test]
-fn an_unparseable_message_is_not_stored() {
+#[tokio::test]
+async fn an_unparseable_message_is_not_stored() {
     let state = one_account();
     let backend = Delivery {
         state: state.clone(),
@@ -165,8 +169,8 @@ fn an_unparseable_message_is_not_stored() {
 
 /// The cap applies on the way in as well as on the way out: either direction
 /// can be what fills the disk.
-#[test]
-fn delivery_stops_at_the_storage_cap() {
+#[tokio::test]
+async fn delivery_stops_at_the_storage_cap() {
     let state =
         relay(r#"{"domain":{"a.test":{"account":{"alice":{}}}},"max_account_storage_mb":1}"#);
     let backend = Delivery {
@@ -188,8 +192,8 @@ fn delivery_stops_at_the_storage_cap() {
 
 /// Delivery is recorded, and a failure is recorded as a failure — the log is
 /// how an operator sees mail arriving at all.
-#[test]
-fn delivery_is_logged_with_its_outcome() {
+#[tokio::test]
+async fn delivery_is_logged_with_its_outcome() {
     let state = one_account();
     let backend = Delivery {
         state: state.clone(),
