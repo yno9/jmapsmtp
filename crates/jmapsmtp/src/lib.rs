@@ -35,6 +35,7 @@ pub mod inbound_tls;
 pub mod maintenance;
 pub mod outbound;
 pub mod pgp;
+pub mod pkarr;
 pub mod provision;
 pub mod routes;
 pub mod server;

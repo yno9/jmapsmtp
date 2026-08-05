@@ -71,9 +71,71 @@ impl Transport for HttpTransport {
     ) -> Option<(u16, String)> {
         off_runtime(|| self.send_blocking(method, url, token, body))
     }
+
+    fn forward(
+        &self,
+        method: &str,
+        url: &str,
+        token: &str,
+        body: Option<&[u8]>,
+    ) -> Option<jmapserver::anchor::Relayed> {
+        off_runtime(|| self.forward_blocking(method, url, token, body))
+    }
 }
 
 impl HttpTransport {
+    /// The Pkarr gateway's own client, with its own timeout.
+    ///
+    /// **40 seconds, against [`jmapserver::anchor::TIMEOUT`]'s 5.** The other
+    /// calls are decisions a user is waiting on, where slow and down are the
+    /// same thing. This one is a DHT traversal at the far end, generous next
+    /// to the anchor's own 30s: a traversal still going is worth waiting for,
+    /// and the client already treats a failure as "try the next gateway".
+    fn gateway_client() -> &'static reqwest::blocking::Client {
+        static CLIENT: std::sync::OnceLock<reqwest::blocking::Client> = std::sync::OnceLock::new();
+        CLIENT.get_or_init(|| {
+            reqwest::blocking::Client::builder()
+                .timeout(std::time::Duration::from_secs(40))
+                .build()
+                .unwrap_or_default()
+        })
+    }
+
+    fn forward_blocking(
+        &self,
+        method: &str,
+        url: &str,
+        token: &str,
+        body: Option<&[u8]>,
+    ) -> Option<jmapserver::anchor::Relayed> {
+        let method = reqwest::Method::from_bytes(method.as_bytes()).ok()?;
+        let mut request = Self::gateway_client()
+            .request(method, url)
+            // Set unconditionally, as Go does — including on GET, where there
+            // is no body to describe.
+            .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
+            // The anchor's /pkarr is for its own relays, not the world. This
+            // route is the public face; forwarding without the token would
+            // leave the anchor a gateway anyone could spend.
+            .header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"));
+        if let Some(body) = body {
+            request = request.body(body.to_vec());
+        }
+        let response = request.send().ok()?;
+        let status = response.status().as_u16();
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string());
+        let body = response.bytes().ok()?.to_vec();
+        Some(jmapserver::anchor::Relayed {
+            status,
+            content_type,
+            body,
+        })
+    }
+
     fn send_blocking(
         &self,
         method: &str,

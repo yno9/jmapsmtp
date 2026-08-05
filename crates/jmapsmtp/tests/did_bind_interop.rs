@@ -68,7 +68,25 @@ fn start_stub_anchor() -> u16 {
     std::thread::spawn(move || {
         for stream in listener.incoming() {
             let Ok(mut s) = stream else { continue };
-            let status = read_request_and_choose(&mut s);
+            let (status, path, body_in) = read_request(&mut s);
+            if path.starts_with("/pkarr/") {
+                // Answered as bytes with a non-UTF-8 octet in them, so a side
+                // that decoded the blob as text would corrupt it visibly
+                // rather than passing a test by luck.
+                let payload: Vec<u8> = if body_in.is_empty() {
+                    vec![0x00, 0xff, b'p', b'k', 0xfe, 0x80]
+                } else {
+                    body_in.clone().into_bytes()
+                };
+                let head = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\n\
+                     Content-Length: {}\r\nConnection: close\r\n\r\n",
+                    payload.len()
+                );
+                let _ = s.write_all(head.as_bytes());
+                let _ = s.write_all(&payload);
+                continue;
+            }
             let body = match status {
                 200 => "{}",
                 401 => "signature does not verify\n",
@@ -86,27 +104,63 @@ fn start_stub_anchor() -> u16 {
     port
 }
 
-/// Read the whole request and pick a status from the DID it carries.
-fn read_request_and_choose(s: &mut TcpStream) -> u16 {
+/// Read the whole request: the status the DID implies, the path, and the body.
+fn read_request(s: &mut TcpStream) -> (u16, String, String) {
     let mut r = BufReader::new(s.try_clone().unwrap());
     let mut len = 0usize;
+    let mut chunked = false;
+    let mut path = String::new();
     loop {
         let mut line = String::new();
         if r.read_line(&mut line).unwrap_or(0) == 0 {
-            return 500;
+            return (500, path, String::new());
+        }
+        if path.is_empty() {
+            path = line.split_whitespace().nth(1).unwrap_or("").to_string();
         }
         let lower = line.to_ascii_lowercase();
         if let Some(v) = lower.strip_prefix("content-length:") {
             len = v.trim().parse().unwrap_or(0);
         }
+        if lower.starts_with("transfer-encoding:") && lower.contains("chunked") {
+            chunked = true;
+        }
         if line == "\r\n" || line == "\n" {
             break;
         }
     }
-    let mut body = vec![0u8; len];
-    let _ = r.read_exact(&mut body);
-    let body = String::from_utf8_lossy(&body);
-    if body.contains("did:webvh:reject") {
+    // **Chunked has to be understood here, not worked around.** Go's proxy
+    // hands `r.Body` to `http.NewRequest`, which cannot know the length and
+    // so streams it chunked; this port buffers the body and sends a
+    // Content-Length. A stub that read only Content-Length saw Go's body as
+    // empty and this port's as present, and reported a difference that was
+    // its own — the two relays forward the same bytes, framed differently,
+    // and any real anchor accepts both.
+    let mut raw = Vec::new();
+    if chunked {
+        loop {
+            let mut size_line = String::new();
+            if r.read_line(&mut size_line).unwrap_or(0) == 0 {
+                break;
+            }
+            let size = usize::from_str_radix(size_line.trim(), 16).unwrap_or(0);
+            if size == 0 {
+                break;
+            }
+            let mut chunk = vec![0u8; size];
+            if r.read_exact(&mut chunk).is_err() {
+                break;
+            }
+            raw.extend_from_slice(&chunk);
+            let mut crlf = [0u8; 2];
+            let _ = r.read_exact(&mut crlf);
+        }
+    } else {
+        raw = vec![0u8; len];
+        let _ = r.read_exact(&mut raw);
+    }
+    let body = String::from_utf8_lossy(&raw).to_string();
+    let status = if body.contains("did:webvh:reject") {
         401
     } else if body.contains("did:webvh:conflict") {
         409
@@ -114,7 +168,8 @@ fn read_request_and_choose(s: &mut TcpStream) -> u16 {
         500
     } else {
         200
-    }
+    };
+    (status, path, body)
 }
 
 // ── both sides, anchored ──────────────────────────────────────────────────
@@ -365,6 +420,60 @@ fn an_anchorless_relay_names_the_anchor_and_not_the_missing_signature() {
     );
     assert_eq!(s, go_status);
     assert_eq!(s, 400);
+
+    ours.stop();
+}
+
+/// `/pkarr/`, the other route that answered 501, compared end to end.
+///
+/// The stub answers with a body containing bytes that are not valid UTF-8, so
+/// a side that decoded the blob as text would mangle it here rather than
+/// passing because the fixture happened to be ASCII. It is a signed DHT
+/// record: one changed byte and the far end rejects it.
+#[test]
+fn pkarr_forwards_and_refuses_exactly_as_the_oracle_does() {
+    let Some((o, ours)) = both() else { return };
+
+    for (method, path, what) in [
+        ("GET", "/pkarr/", "empty key"),
+        ("GET", "/pkarr/abc/def", "key with a slash"),
+        ("DELETE", "/pkarr/abc/def", "bad key AND bad method"),
+        ("DELETE", "/pkarr/abcdef", "unsupported method"),
+        ("OPTIONS", "/pkarr/abcdef", "preflight"),
+    ] {
+        let (go_status, go_body, _, go_h) = raw_full(o.http_port, method, path, None, None);
+        let (our_status, our_body, _, our_h) = raw_full(ours.port, method, path, None, None);
+        assert_eq!(our_status, go_status, "{what}: status");
+        assert_eq!(our_body, go_body, "{what}: body");
+        for h in [
+            "access-control-allow-methods",
+            "access-control-allow-headers",
+        ] {
+            assert_eq!(our_h.get(h), go_h.get(h), "{what}: header {h}");
+        }
+    }
+
+    // The forwarding path itself, in both directions.
+    for (method, body, what) in [
+        ("GET", None, "resolve"),
+        ("PUT", Some("a-signed-record"), "publish"),
+    ] {
+        let (go_status, go_body, _, go_h) =
+            raw_full(o.http_port, method, "/pkarr/abcdef", body, None);
+        let (our_status, our_body, _, our_h) =
+            raw_full(ours.port, method, "/pkarr/abcdef", body, None);
+        assert_eq!(our_status, go_status, "{what}: status");
+        assert_eq!(
+            our_body, go_body,
+            "{what}: the blob must survive byte for byte"
+        );
+        assert_eq!(
+            our_h.get("content-type"),
+            go_h.get("content-type"),
+            "{what}: the far end's Content-Type is copied through"
+        );
+        assert_eq!(go_status, 200, "{what}: the stub should have answered");
+    }
 
     ours.stop();
 }

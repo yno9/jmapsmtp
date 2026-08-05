@@ -818,8 +818,9 @@ fn the_unwired_routes_are_the_ones_named_here() {
     // while asserting nothing. If you empty it again, check that the route you
     // removed is compared somewhere that actually runs.
     //
-    // `/pkarr/` is still unwired and cannot be listed here: it is only mounted
-    // when `anchor_url` is set, which this suite's config does not do.
+    // `/pkarr/` is wired too, and likewise compared in `did_bind_interop` —
+    // it is only mounted when `anchor_url` is set, which this suite's config
+    // does not do, so it could never have been listed here anyway.
     let unwired: [&str; 0] = [];
 
     for target in unwired {

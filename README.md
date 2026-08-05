@@ -10,10 +10,9 @@ or any JMAP client.
 > from Go to Rust. `just difftest` compares the two binaries side by side over
 > 46 requests and reports no undeclared differences.
 >
-> `PUT /account/did` — how a client binds an identity — is implemented and
-> compared against the oracle with an anchor behind both sides. **`/pkarr/` is
-> still 501**, so publishing a `did:dht` document through this relay does not
-> work; `did:webvh` does not need it.
+> Every route the Go implementation serves is served here, including the two
+> that need an anchor — `PUT /account/did` and the `/pkarr/` gateway — each
+> compared against the oracle with an anchor behind both sides.
 >
 > It runs in a real deployment, serving JMAP over HTTPS with a live anchor.
 >

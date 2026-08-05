@@ -541,6 +541,7 @@ async fn dispatch(
         "/jmap/api/" => handlers::jmap_api(&state, &req, &body),
         "/account/provision" => handlers::account_provision(&state, &req, &body),
         "/account/did" => handlers::account_did(&state, &req, &body),
+        "/pkarr/" => handlers::pkarr(&state, &req, &body),
         "/account/delete" => handlers::account_delete(&state, &req),
         "/account/storage/purge-messages" => handlers::storage_purge(&state, &req),
         "/admin/dashboard" => handlers::admin_dashboard(),
@@ -1174,6 +1175,53 @@ mod handlers {
     /// The device key **is** the credential: the vouch is verified and written
     /// before the account is registered, so there is no "create now, add a
     /// device later" gap for someone else to walk into.
+    /// `/pkarr/` — forward a DHT record to the anchor's node.
+    ///
+    /// Unauthenticated on purpose: a client publishes its own signed record
+    /// and the signature is what protects it. The relay's own token is added
+    /// on the way out, because the anchor's gateway is for its relays and not
+    /// for the world.
+    pub fn pkarr(state: &RelayState, req: &Request<()>, body: &[u8]) -> Response<Body> {
+        use crate::pkarr::Action;
+        let mut res = (|| {
+            let anchor = crate::anchor::anchor_ref(&state.cfg);
+            let key = match crate::pkarr::decide(req.method().as_str(), req.uri().path()) {
+                Action::Preflight => return no_content(),
+                // Go's `http.NotFound`, which is the same body the mux writes
+                // for a route nobody registered — so a probe cannot tell the
+                // gateway apart from an unmounted path.
+                Action::NotFound => return text_error(404, "404 page not found"),
+                Action::MethodNotAllowed => return method_not_allowed(),
+                Action::Forward { key } => key.to_string(),
+            };
+
+            let url = crate::pkarr::target(&anchor.url, &key);
+            // A GET carries no body. Go passes `r.Body` through regardless,
+            // which for a GET is empty; sending `Some(&[])` instead would put
+            // a zero-length body on the wire and change the request.
+            let outgoing = if body.is_empty() { None } else { Some(body) };
+            let Some(relayed) =
+                state
+                    .anchor
+                    .forward(req.method().as_str(), &url, &anchor.token, outgoing)
+            else {
+                return text_error(502, "pkarr gateway unreachable");
+            };
+
+            let mut res = Response::new(Body::from(relayed.body));
+            *res.status_mut() =
+                StatusCode::from_u16(relayed.status).unwrap_or(StatusCode::BAD_GATEWAY);
+            if let Some(ct) = relayed.content_type
+                && let Ok(v) = HeaderValue::from_str(&ct)
+            {
+                res.headers_mut().insert(header::CONTENT_TYPE, v);
+            }
+            res
+        })();
+        set_route_cors(&mut res, "GET, PUT, OPTIONS", "Content-Type");
+        res
+    }
+
     /// `PUT /account/did` — bind a DID to the **authenticated** account.
     ///
     /// The account is taken from the credential and never from the body; see

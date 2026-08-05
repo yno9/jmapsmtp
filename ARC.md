@@ -217,12 +217,15 @@ are listed in SPEC.md §11; the ones that matter most:
 
 ## 9. What is not here
 
-- **`/pkarr/`.** Mounted when an anchor is configured, no arm in `dispatch`,
-  so it answers 501. It proxies a client's `did:dht` document to the anchor's
-  DHT node; `did:webvh` identities do not use it.
+- **A DHT node.** `/pkarr/` forwards a client's `did:dht` record to the
+  anchor's node rather than running one. Every relay used to run its own — its
+  own UDP socket, routing table and republish loop, duplicated per relay. The
+  route stays because the *client's* route stays: biset derives its gateway URL
+  from its own relay and publishes only there, so removing it would strand
+  every loaded client.
 
-  `PUT /account/did` was in this list and is not any more, and *how it got
-  missed* is worth keeping, because it is a failure of the method the rest of
+  `PUT /account/did` and `/pkarr/` were in this list as **unimplemented**, and
+  *how that got missed* is worth keeping, because it is a failure of the method the rest of
   this document argues for. `mux_interop` compares route **tables** and both
   sides list the route. `server_interop`'s list of unwired routes had been
   emptied, and an empty array makes its loop run zero times, so it asserted
@@ -233,7 +236,8 @@ are listed in SPEC.md §11; the ones that matter most:
   The seam is closed rather than patched: `did_bind_interop` stands up a stub
   anchor and runs **both** implementations against it, which is a comparison
   that did not exist before — every interop suite until then ran an anchorless
-  oracle, so the anchored surface had never been compared at all.
+  oracle, so the anchored surface had never been compared at all. It also runs
+  an anchorless pair, because the order of the checks is only observable there.
 
 
 - **The anchor itself.** An external service; this relay is a client.

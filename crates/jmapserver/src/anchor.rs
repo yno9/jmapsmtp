@@ -102,6 +102,37 @@ pub trait Transport: Send + Sync {
         token: &str,
         body: Option<&[u8]>,
     ) -> Option<(u16, String)>;
+
+    /// As [`Transport::send`], but keeping the response **bytes** and its
+    /// `Content-Type`.
+    ///
+    /// A separate method rather than a wider `send`, because the two carry
+    /// different things and conflating them would cost the callers that do not
+    /// need it. [`claim`] and friends read a short diagnostic reason and are
+    /// better served by a `String`; the Pkarr gateway forwards an opaque
+    /// signed blob, and decoding that as UTF-8 would corrupt it silently —
+    /// the bytes are a DHT record, not text.
+    ///
+    /// The default returns `None`, i.e. "gateway unreachable", so a transport
+    /// written for the claim path cannot accidentally proxy anything.
+    fn forward(
+        &self,
+        _method: &str,
+        _url: &str,
+        _token: &str,
+        _body: Option<&[u8]>,
+    ) -> Option<Relayed> {
+        None
+    }
+}
+
+/// A response passed through unchanged.
+pub struct Relayed {
+    pub status: u16,
+    /// Copied through only when the far end set one, matching Go's
+    /// `if ct := resp.Header.Get("Content-Type"); ct != ""`.
+    pub content_type: Option<String>,
+    pub body: Vec<u8>,
 }
 
 /// How long a call waits before giving up.
