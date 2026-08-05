@@ -117,6 +117,26 @@ pub fn steps() -> Vec<Step> {
         // reason WrapCORS exists at all, so it is worth pinning.
         get("unknown-route-404", "/no/such/route", Auth::None),
         get("wkd-policy", "/.well-known/openpgpkey/policy", Auth::None),
+        // The route that answered 501 here for the whole port while three
+        // other layers of comparison reported nothing. The difftest fixture
+        // configures no anchor, so this exercises the anchorless refusal —
+        // the anchored answers are compared in `did_bind_interop`, which can
+        // stand up a stub anchor and this harness cannot.
+        get("account-did-wrong-method", "/account/did", Auth::None),
+        req(
+            "account-did-anchorless",
+            "PUT",
+            "/account/did",
+            Auth::Basic,
+            json!({"did": "did:webvh:abc"}),
+        ),
+        req(
+            "account-did-no-did",
+            "PUT",
+            "/account/did",
+            Auth::Basic,
+            json!({"did_sig": "sig"}),
+        ),
         get(
             "wkd-lookup-hash-matches",
             // zbase32(sha1("alice")), verified against the Go implementation.

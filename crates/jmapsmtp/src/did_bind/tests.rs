@@ -124,5 +124,8 @@ fn the_statuses_that_must_differ_do_differ() {
 #[test]
 fn an_absent_anchor_is_not_reported_as_an_outage() {
     assert_eq!(Refusal::NoAnchor.status(), 400);
-    assert_ne!(Refusal::NoAnchor.status(), Refusal::AnchorUnavailable.status());
+    assert_ne!(
+        Refusal::NoAnchor.status(),
+        Refusal::AnchorUnavailable.status()
+    );
 }

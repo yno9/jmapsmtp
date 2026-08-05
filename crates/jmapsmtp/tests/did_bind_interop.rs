@@ -194,6 +194,25 @@ fn config_json(http_port: u16, smtp_port: u16) -> String {
     )
 }
 
+/// The same relay with **no anchor**. Needed because the order of the checks
+/// is only observable here: with an anchor configured the `no identity anchor`
+/// branch is unreachable, so an anchored comparison cannot tell whether the
+/// anchor is checked before or after `did_sig`.
+fn config_json_anchorless(http_port: u16, smtp_port: u16) -> String {
+    format!(
+        r#"{{"listen_addr":"127.0.0.1:{http_port}","smtp_port":{smtp_port},
+            "base_url":"http://127.0.0.1:{http_port}","hostname":"t.invalid",
+            "domain":{{"a.test":{{"account":{{"alice":{{}}}}}}}}}}"#
+    )
+}
+
+fn both_anchorless() -> Option<(Oracle, Ours)> {
+    let o = Oracle::start_with("DID_BIND_INTEROP", config_json_anchorless, seed)?;
+    let cfg: Config = serde_json::from_str(&config_json_anchorless(o.http_port, 1)).unwrap();
+    let ours = Ours::start(&o.root.path().join("data"), cfg);
+    Some((o, ours))
+}
+
 fn both() -> Option<(Oracle, Ours)> {
     let _ = ANCHOR_PORT.set(start_stub_anchor());
     let o = Oracle::start_with("DID_BIND_INTEROP", config_json, seed)?;
@@ -248,7 +267,14 @@ fn account_did_answers_exactly_what_the_oracle_answers() {
 
     // Unauthenticated first: a caller with no credential must not be able to
     // tell a malformed body from a well-formed one.
-    let s = compare(&o, &ours, "PUT", Some(r#"{"did":"did:webvh:ok"}"#), None, "no credential");
+    let s = compare(
+        &o,
+        &ours,
+        "PUT",
+        Some(r#"{"did":"did:webvh:ok"}"#),
+        None,
+        "no credential",
+    );
     assert_eq!(s, 401, "the oracle should refuse an unauthenticated bind");
 
     let s = compare(&o, &ours, "GET", None, Some(&auth), "wrong method");
@@ -256,7 +282,14 @@ fn account_did_answers_exactly_what_the_oracle_answers() {
 
     compare(&o, &ours, "OPTIONS", None, None, "preflight");
 
-    let s = compare(&o, &ours, "PUT", Some("not json"), Some(&auth), "unparseable body");
+    let s = compare(
+        &o,
+        &ours,
+        "PUT",
+        Some("not json"),
+        Some(&auth),
+        "unparseable body",
+    );
     assert_eq!(s, 400);
 
     let s = compare(&o, &ours, "PUT", Some("{}"), Some(&auth), "no did");
@@ -270,7 +303,10 @@ fn account_did_answers_exactly_what_the_oracle_answers() {
         Some(&auth),
         "did without a signature",
     );
-    assert_eq!(s, 400, "the signature is a separate claim from the credential");
+    assert_eq!(
+        s, 400,
+        "the signature is a separate claim from the credential"
+    );
 
     // Now the anchor's verdicts, each chosen by the DID.
     for (did, want, what) in [
@@ -287,6 +323,52 @@ fn account_did_answers_exactly_what_the_oracle_answers() {
     ours.stop();
 }
 
+/// **The order of the checks, asked of the oracle rather than assumed.**
+///
+/// A request with a DID and no signature, on a relay with no anchor, is
+/// refused for two reasons at once. Which one the caller is told is a choice,
+/// and it was made by reading `anchor_on.go` — so it is exactly the kind of
+/// claim this project does not accept from a reading. The oracle decides.
+///
+/// The distinction matters to a client: `no identity anchor` is permanent and
+/// means stop, `did_sig required` means send more.
+#[test]
+fn an_anchorless_relay_names_the_anchor_and_not_the_missing_signature() {
+    let Some((o, ours)) = both_anchorless() else {
+        return;
+    };
+    let auth = basic_auth("alice@a.test");
+
+    let (go_status, go_body, _, _) = raw_full(
+        o.http_port,
+        "PUT",
+        "/account/did",
+        Some(r#"{"did":"did:webvh:abc"}"#),
+        Some(&auth),
+    );
+    assert!(
+        go_body.contains("identity anchor"),
+        "the oracle should report the anchor, not the signature: {go_body:?}"
+    );
+    assert!(
+        !go_body.contains("did_sig"),
+        "if this now names did_sig, the oracle reordered its checks and          did_bind::decide must follow: {go_body:?}"
+    );
+
+    let s = compare(
+        &o,
+        &ours,
+        "PUT",
+        Some(r#"{"did":"did:webvh:abc"}"#),
+        Some(&auth),
+        "anchorless, and no signature either",
+    );
+    assert_eq!(s, go_status);
+    assert_eq!(s, 400);
+
+    ours.stop();
+}
+
 /// The one thing the account **cannot** do: bind a DID to somebody else.
 ///
 /// The body carries no account, so there is nothing to smuggle — this pins
@@ -298,7 +380,14 @@ fn the_bound_account_comes_from_the_credential_not_the_body() {
     let auth = basic_auth("alice@a.test");
     let body = r#"{"did":"did:webvh:ok","did_sig":"sig","bind_ts":1785000000,
                    "username":"bob","localpart":"bob","account":"bob@a.test"}"#;
-    let s = compare(&o, &ours, "PUT", Some(body), Some(&auth), "extra name fields");
+    let s = compare(
+        &o,
+        &ours,
+        "PUT",
+        Some(body),
+        Some(&auth),
+        "extra name fields",
+    );
     assert_eq!(
         s, 204,
         "the extra fields are ignored rather than rejected — pinning that they \

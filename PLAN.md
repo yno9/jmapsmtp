@@ -546,7 +546,12 @@ HTTP 層（axum ルータ・CORS・SSE）と全体 difftest は **M6 に繰り�
 
 ### 残件
 
-0. **【最重要】`PUT /account/did` と `/pkarr/` が未実装（501）**。
+0. **`/pkarr/` が未実装（501）**。
+   anchor 設定時にだけ mount される did:dht 用の DHT ゲートウェイ。
+   did:webvh は使わないので、biset の identity bind は通る。
+
+   ~~**【最重要】`PUT /account/did` と `/pkarr/` が未実装（501）**~~
+   → `/account/did` は **M9 で実装**（`did_bind.rs` / `did_bind_interop`）。
    `dispatch` に arm が無く、`_ => 501` に落ちている。
    Go は `anchor_on.go` の `registerDidUpdate` で認証してから
    anchor に DID クレームを転送する。**biset のアイデンティティは DID なので、

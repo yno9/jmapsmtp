@@ -10,12 +10,12 @@ or any JMAP client.
 > from Go to Rust. `just difftest` compares the two binaries side by side over
 > 46 requests and reports no undeclared differences.
 >
-> **`PUT /account/did` is not implemented** — it answers 501 where Go binds a
-> DID to an account through the anchor, and `/pkarr/` does the same when an
-> anchor is configured. Everything that does not involve the anchor works,
-> including a real deployment serving JMAP over HTTPS. Since identity here
-> rests on the DID, a client that binds one cannot finish against this relay
-> yet.
+> `PUT /account/did` — how a client binds an identity — is implemented and
+> compared against the oracle with an anchor behind both sides. **`/pkarr/` is
+> still 501**, so publishing a `did:dht` document through this relay does not
+> work; `did:webvh` does not need it.
+>
+> It runs in a real deployment, serving JMAP over HTTPS with a live anchor.
 >
 > See [MIGRATION.md](MIGRATION.md) before switching a deployment: a few
 > behaviours differ on purpose, and one of them (`ADMIN_TOKEN`) will change

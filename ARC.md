@@ -217,18 +217,23 @@ are listed in SPEC.md §11; the ones that matter most:
 
 ## 9. What is not here
 
-- **`PUT /account/did` and `/pkarr/`.** Mounted in the `anchor` build, with no
-  arm in `dispatch`, so they answer 501. Go's `registerDidUpdate` authenticates
-  the caller and forwards the DID claim to the anchor; the client for that
-  already exists here (`anchor::claim`), the route does not.
+- **`/pkarr/`.** Mounted when an anchor is configured, no arm in `dispatch`,
+  so it answers 501. It proxies a client's `did:dht` document to the anchor's
+  DHT node; `did:webvh` identities do not use it.
 
-  Worth knowing *how this was missed*, because it is a failure of the method
-  the rest of this document argues for: `mux_interop` compares route **tables**
-  and both sides list the route; `server_interop`'s list of unwired routes had
-  been emptied, and an empty array makes its loop run zero times, so it
-  asserted nothing; and the difftest scenario never requests either path. Three
-  layers of comparison, and the gap sat in the seam between them. It was found
-  by deploying the relay and watching it answer 501.
+  `PUT /account/did` was in this list and is not any more, and *how it got
+  missed* is worth keeping, because it is a failure of the method the rest of
+  this document argues for. `mux_interop` compares route **tables** and both
+  sides list the route. `server_interop`'s list of unwired routes had been
+  emptied, and an empty array makes its loop run zero times, so it asserted
+  nothing. The difftest scenario never requested the path. Three layers of
+  comparison, and the gap sat in the seam between them — found by deploying the
+  relay and watching a client get 501.
+
+  The seam is closed rather than patched: `did_bind_interop` stands up a stub
+  anchor and runs **both** implementations against it, which is a comparison
+  that did not exist before — every interop suite until then ran an anchorless
+  oracle, so the anchored surface had never been compared at all.
 
 
 - **The anchor itself.** An external service; this relay is a client.

@@ -28,7 +28,7 @@ build-noanchor:
 # makes the reported totals lower than a green run's — count suites, not just
 # tests, when comparing two runs.
 test: interop
-    CRYPTENV_INTEROP=required STORE_INTEROP=required DISPATCH_INTEROP=required MIME_INTEROP=required DKIM_INTEROP=required AUTOCRYPT_INTEROP=required SMTP_INTEROP=required PGP_INTEROP=required DEVICES_INTEROP=required STARTUP_INTEROP=required MUX_INTEROP=required HANDLER_INTEROP=required PROVISION_INTEROP=required HOOKS_INTEROP=required INBOUND_BUFFER_INTEROP=required DEVICES_ENDPOINT_INTEROP=required WKD_INTEROP=required SETUP_INTEROP=required CUSTOMDOMAIN_INTEROP=required STORAGE_INTEROP=required CONTACTS_INTEROP=required ADMIN_INTEROP=required ACTIVITY_INTEROP=required SERVER_INTEROP=required cargo test --workspace
+    CRYPTENV_INTEROP=required STORE_INTEROP=required DISPATCH_INTEROP=required MIME_INTEROP=required DKIM_INTEROP=required AUTOCRYPT_INTEROP=required SMTP_INTEROP=required PGP_INTEROP=required DEVICES_INTEROP=required STARTUP_INTEROP=required MUX_INTEROP=required HANDLER_INTEROP=required PROVISION_INTEROP=required HOOKS_INTEROP=required INBOUND_BUFFER_INTEROP=required DID_BIND_INTEROP=required DEVICES_ENDPOINT_INTEROP=required WKD_INTEROP=required SETUP_INTEROP=required CUSTOMDOMAIN_INTEROP=required STORAGE_INTEROP=required CONTACTS_INTEROP=required ADMIN_INTEROP=required ACTIVITY_INTEROP=required SERVER_INTEROP=required cargo test --workspace
 
 # Everything except the Go interop tests, for when the Go toolchain is absent.
 test-rust-only:
@@ -96,7 +96,13 @@ oracle-check: oracle
 # ── differential testing (PLAN.md M1) ─────────────────────────────────────
 
 # Oracle vs this port. The acceptance criterion for M4 onwards.
-difftest *ARGS:
+#
+# Depends on `build` because the harness runs `target/debug/jmapsmtp` and does
+# not compile it. Without this a stale binary is compared against a fresh
+# oracle: it reported a difference that had already been fixed in the source,
+# and the dangerous direction is the other one — a stale binary that still
+# passes.
+difftest *ARGS: build
     cargo run -p xtask -- difftest {{ARGS}}
 
 # Oracle vs oracle. Proves the normalisation filters strip only genuine
