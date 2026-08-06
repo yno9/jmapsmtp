@@ -818,9 +818,15 @@ fn the_unwired_routes_are_the_ones_named_here() {
     // while asserting nothing. If you empty it again, check that the route you
     // removed is compared somewhere that actually runs.
     //
-    // `/pkarr/` is wired too, and likewise compared in `did_bind_interop` —
-    // it is only mounted when `anchor_url` is set, which this suite's config
-    // does not do, so it could never have been listed here anyway.
+    // `/pkarr/` and `/admin/drain-anchor` are wired too. Neither could ever
+    // have been listed here: both are mounted only with `anchor_url` set,
+    // which this suite's config does not do, and the second is POST-only
+    // behind a bearer token where this suite sends unauthenticated GETs.
+    //
+    // **That is why `no_route_answers_501` exists**, and it is the test to
+    // reach for now: it walks the route table itself, with credentials and
+    // every method, and needs no oracle. This one stays for the case it
+    // still covers — a route the oracle serves and this port does not.
     let unwired: [&str; 0] = [];
 
     for target in unwired {

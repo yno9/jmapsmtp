@@ -293,6 +293,42 @@ pub fn release(transport: &dyn Transport, anchor: &Ref, localpart: &str, domain:
     let _ = release_ok(transport, anchor, localpart, domain);
 }
 
+/// One name at the anchor.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Name {
+    pub localpart: String,
+    pub domain: String,
+}
+
+/// What an operator needs to know before turning a relay anchorless.
+///
+/// The split is the point. A name in `failed` **may still hold a claim**, and
+/// a claim left behind blocks a legitimately different relay from ever taking
+/// that name — so a partial drain is not a partial success, it is a reason to
+/// stop. Both fields are always arrays, never null: Go initialises them, and a
+/// client reading `.length` would break on the difference.
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+pub struct DrainReport {
+    pub released: Vec<Name>,
+    pub failed: Vec<Name>,
+}
+
+/// Withdraw the claim for every name given.
+///
+/// The bulk counterpart to [`release`], for the one reconciliation a relay can
+/// drive on its own: going anchorless without stranding its names.
+pub fn drain(transport: &dyn Transport, anchor: &Ref, names: &[Name]) -> DrainReport {
+    let mut report = DrainReport::default();
+    for name in names {
+        if release_ok(transport, anchor, &name.localpart, &name.domain) {
+            report.released.push(name.clone());
+        } else {
+            report.failed.push(name.clone());
+        }
+    }
+    report
+}
+
 /// Percent-encode a query value, as `url.QueryEscape` does.
 fn query_escape(value: &str) -> String {
     let mut out = String::with_capacity(value.len());

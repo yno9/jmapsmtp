@@ -386,6 +386,32 @@ pub fn raw_full(
     raw_request_full(port, method, target, body, basic_auth)
 }
 
+/// As [`raw_full`], with one arbitrary header instead of Basic Auth — the
+/// bearer routes need `Authorization: Bearer …`, which `basic_auth` cannot
+/// express.
+pub fn raw_full_header(
+    port: u16,
+    method: &str,
+    target: &str,
+    body: Option<&str>,
+    header_name: &str,
+    header_value: &str,
+) -> (
+    u16,
+    String,
+    String,
+    std::collections::BTreeMap<String, String>,
+) {
+    raw_request_full_with(
+        port,
+        method,
+        target,
+        body,
+        None,
+        Some((header_name, header_value)),
+    )
+}
+
 /// The response headers, lowercased.
 pub fn raw_headers(port: u16, target: &str) -> std::collections::BTreeMap<String, String> {
     raw_request(port, target).3
@@ -415,6 +441,22 @@ fn raw_request_full(
     String,
     std::collections::BTreeMap<String, String>,
 ) {
+    raw_request_full_with(port, method, target, body, basic_auth, None)
+}
+
+fn raw_request_full_with(
+    port: u16,
+    method: &str,
+    target: &str,
+    body: Option<&str>,
+    basic_auth: Option<&str>,
+    extra: Option<(&str, &str)>,
+) -> (
+    u16,
+    String,
+    String,
+    std::collections::BTreeMap<String, String>,
+) {
     let mut s = TcpStream::connect(format!("127.0.0.1:{port}")).unwrap();
     s.set_read_timeout(Some(std::time::Duration::from_secs(10)))
         .unwrap();
@@ -423,6 +465,9 @@ fn raw_request_full(
         "{method} {target} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n"
     )
     .unwrap();
+    if let Some((name, value)) = extra {
+        write!(s, "{name}: {value}\r\n").unwrap();
+    }
     if let Some(auth) = basic_auth {
         write!(s, "Authorization: Basic {auth}\r\n").unwrap();
     }

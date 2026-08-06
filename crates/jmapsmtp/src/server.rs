@@ -542,6 +542,7 @@ async fn dispatch(
         "/account/provision" => handlers::account_provision(&state, &req, &body),
         "/account/did" => handlers::account_did(&state, &req, &body),
         "/pkarr/" => handlers::pkarr(&state, &req, &body),
+        "/admin/drain-anchor" => handlers::drain_anchor(&state, &req),
         "/account/delete" => handlers::account_delete(&state, &req),
         "/account/storage/purge-messages" => handlers::storage_purge(&state, &req),
         "/admin/dashboard" => handlers::admin_dashboard(),
@@ -1175,6 +1176,44 @@ mod handlers {
     /// The device key **is** the credential: the vouch is verified and written
     /// before the account is registered, so there is no "create now, add a
     /// device later" gap for someone else to walk into.
+    /// `POST /admin/drain-anchor` — release every claim this relay holds.
+    ///
+    /// The bearer guard is applied in `dispatch`, not here.
+    ///
+    /// **A partial drain is reported as a failure**, 502 with the report as
+    /// the body: any name in `failed` may still hold a claim, and a claim left
+    /// behind blocks a legitimately different relay from ever taking that
+    /// name. An operator reading only the status must not be told "done".
+    pub fn drain_anchor(state: &RelayState, req: &Request<()>) -> Response<Body> {
+        if req.method() != axum::http::Method::POST {
+            return method_not_allowed();
+        }
+        let anchor = crate::anchor::anchor_ref(&state.cfg);
+        if !anchor.is_configured() {
+            return text_error(400, "relay is not anchored — nothing to drain");
+        }
+        let names: Vec<jmapserver::anchor::Name> =
+            jmapserver::admin::list_provisioned(&state.data_dir)
+                .into_iter()
+                .map(|r| jmapserver::anchor::Name {
+                    localpart: r.localpart,
+                    domain: r.domain,
+                })
+                .collect();
+        let report = jmapserver::anchor::drain(state.anchor.as_ref(), &anchor, &names);
+        println!(
+            "[drain] anchor {}: released {}, failed {}",
+            anchor.url,
+            report.released.len(),
+            report.failed.len()
+        );
+        let status = if report.failed.is_empty() { 200 } else { 502 };
+        match jmap_types::go_json::to_vec(&report) {
+            Ok(body) => json_response(status, body),
+            Err(_) => text_error(500, "internal error"),
+        }
+    }
+
     /// `/pkarr/` — forward a DHT record to the anchor's node.
     ///
     /// Unauthenticated on purpose: a client publishes its own signed record
