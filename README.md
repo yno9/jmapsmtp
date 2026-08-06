@@ -10,9 +10,15 @@ or any JMAP client.
 > from Go to Rust. `just difftest` compares the two binaries side by side over
 > 46 requests and reports no undeclared differences.
 >
-> Every route the Go implementation serves is served here, including the two
-> that need an anchor — `PUT /account/did` and the `/pkarr/` gateway — each
-> compared against the oracle with an anchor behind both sides.
+> Every route the Go implementation serves is served here, including the three
+> that need an anchor — `PUT /account/did`, the `/pkarr/` gateway and
+> `POST /admin/drain-anchor`. `no_route_answers_501` walks the route table and
+> fails on any pattern with no handler behind it, which is how that claim is
+> kept true rather than restated.
+>
+> A DID binding has been driven end to end against a live anchor —
+> `xtask bind-probe` signs the statement biset defines and presents it — with
+> the rejections checked too, so an accepted binding means the anchor looked.
 >
 > It runs in a real deployment, serving JMAP over HTTPS with a live anchor.
 >
