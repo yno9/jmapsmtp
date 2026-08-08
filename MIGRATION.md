@@ -131,6 +131,6 @@ just oracle        # builds the Go binary from ~/go-jmapsmtp + ~/go-jmapserver
 just check         # lint, tests, the harness self-test, then oracle vs this port
 ```
 
-`just difftest` alone runs the two binaries side by side over 46 requests and
+`just difftest` alone runs the two binaries side by side over 49 requests and
 compares status, headers and body. A difference it does not already declare is
 a bug in this port.

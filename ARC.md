@@ -167,7 +167,7 @@ refuses every ownership proof, rather than accepting during an outage.
 Never by reading the Go source and believing it. Every subsystem is compared
 against the Go implementation **running**:
 
-- **`just difftest`** — the oracle and this port, same scenario, 46 steps,
+- **`just difftest`** — the oracle and this port, same scenario, 49 steps,
   compared byte for byte including headers.
 - **Interop suites** — per module, driving the oracle's real endpoints or Go
   helper programs linked against the real packages.

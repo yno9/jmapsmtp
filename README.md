@@ -8,7 +8,7 @@ or any JMAP client.
 > [go-jmapsmtp](https://github.com/yno9/go-jmapsmtp) (plus the
 > [go-jmapserver](https://github.com/yno9/go-jmapserver) library it depends on)
 > from Go to Rust. `just difftest` compares the two binaries side by side over
-> 46 requests and reports no undeclared differences.
+> 49 requests and reports no undeclared differences.
 >
 > Every route the Go implementation serves is served here, including the three
 > that need an anchor — `PUT /account/did`, the `/pkarr/` gateway and
@@ -80,7 +80,7 @@ compared against the Go implementation **running**:
 
 ```sh
 just oracle          # build the Go binary from ~/go-jmapsmtp + ~/go-jmapserver
-just difftest        # run both, same 46 requests, compare bytes
+just difftest        # run both, same 49 requests, compare bytes
 just difftest-check  # prove the harness can fail, and that the oracle agrees with itself
 ```
 
