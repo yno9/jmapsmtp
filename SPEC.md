@@ -257,6 +257,25 @@ Rust では 1 つの実装を共有してよい。
 ### 受信 (port 25)
 
 - 使用機能は `MAIL` / `RCPT` / `DATA` / `RSET` / `QUIT` / `STARTTLS` / `SMTPUTF8` のみ
+- **コマンドの verb は常に 4 文字**（go-smtp `parseCmd`）。
+  4 文字ちょうどか、5 バイト目が空白であること。それ以外は
+  「知らないコマンド」ではなく**形が不正**として `501 5.5.2 Bad command`。
+  `NONSENSE` は 501、未知の 4 文字 verb は `500 5.5.2 Syntax errors, XXXX command unrecognized`
+  （`errors` は複数形。go-smtp の綴りをそのまま使う）
+- `STARTTLS` だけは長さ規則より先に**前方一致**で判定される
+- `VRFY` は `252 2.5.0 Cannot VRFY user, but will accept message`
+- **プロトコルエラー 3 回超で切断**（`500 5.5.1 Too many errors. Quiting now`。
+  綴りもそのまま）。数えるのは 3 種のみ:
+  形が不正 / 空コマンド / 未知の verb。
+  `MAIL` の引数エラーなどは数えない
+- 応答文は go-smtp のもの: `250-Hello <クライアントが名乗ったドメイン>`、
+  `250 2.0.0 Roger, accepting mail from <...>`、
+  `250 2.0.0 I'll make sure <...> gets this`、
+  `250 2.0.0 Session reset`、`250 2.0.0 I have successfully done nothing`
+
+  これらは `smtp_dialogue_interop` が**動いている oracle との会話**で固定する。
+  `smtp_interop` はリテラル文字列と比較していて、go-smtp が変われば
+  黙って乖離する形だった
 - `AuthPlain` は**無条件で成功**を返す（受信時に認証しない）
 - `RCPT TO` はエイリアスマップに**無ければ黙って捨てる**（エラーを返さない）
 - 宛先が 0 件の `DATA` は成功として捨てる

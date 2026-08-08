@@ -129,19 +129,30 @@ where
         .await?;
 
     let mut line = String::new();
+    let mut errors = 0u32;
     loop {
         line.clear();
         if read.read_line(&mut line).await? == 0 {
             return Ok(Outcome::Done); // the peer hung up
         }
         let command = line.trim_end_matches(['\r', '\n']);
-        let (verb, rest) = split_command(command);
+        let (verb, rest) = match split_command(command) {
+            Ok(v) => v,
+            Err(BadCommand) => {
+                write.write_all(b"501 5.5.2 Bad command\r\n").await?;
+                write.flush().await?;
+                if protocol_error(&mut errors, &mut write).await? {
+                    return Ok(Outcome::Done);
+                }
+                continue;
+            }
+        };
 
         match verb.as_str() {
             "EHLO" => {
                 session.greeted = true;
                 session.reset();
-                write.write_all(ehlo_response(cfg).as_bytes()).await?;
+                write.write_all(ehlo_response(cfg, rest).as_bytes()).await?;
             }
             "HELO" => {
                 session.greeted = true;
@@ -159,14 +170,19 @@ where
                 }
                 match parse_path(rest, "FROM:") {
                     Some(addr) => {
+                        write
+                            .write_all(
+                                format!("250 2.0.0 Roger, accepting mail from <{addr}>\r\n")
+                                    .as_bytes(),
+                            )
+                            .await?;
                         session.from = Some(addr);
                         session.rcpts.clear();
-                        write.write_all(b"250 2.0.0 OK\r\n").await?;
                     }
                     None => {
                         write
                             .write_all(
-                                b"501 5.5.4 Was expecting MAIL arg syntax of FROM:<address>\r\n",
+                                b"501 5.5.2 Was expecting MAIL arg syntax of FROM:<address>\r\n",
                             )
                             .await?;
                     }
@@ -186,12 +202,17 @@ where
                         if backend.accepts(&addr.to_lowercase()) {
                             session.rcpts.push(addr.to_lowercase());
                         }
-                        write.write_all(b"250 2.0.0 OK\r\n").await?;
+                        write
+                            .write_all(
+                                format!("250 2.0.0 I'll make sure <{addr}> gets this\r\n")
+                                    .as_bytes(),
+                            )
+                            .await?;
                     }
                     None => {
                         write
                             .write_all(
-                                b"501 5.5.4 Was expecting RCPT arg syntax of TO:<address>\r\n",
+                                b"501 5.5.2 Was expecting RCPT arg syntax of TO:<address>\r\n",
                             )
                             .await?;
                     }
@@ -200,7 +221,7 @@ where
             "DATA" => {
                 if session.from.is_none() {
                     write
-                        .write_all(b"502 5.5.1 Missing MAIL FROM command.\r\n")
+                        .write_all(b"502 5.5.1 Missing RCPT TO command.\r\n")
                         .await?;
                     continue;
                 }
@@ -216,9 +237,13 @@ where
             }
             "RSET" => {
                 session.reset();
-                write.write_all(b"250 2.0.0 OK\r\n").await?;
+                write.write_all(b"250 2.0.0 Session reset\r\n").await?;
             }
-            "NOOP" => write.write_all(b"250 2.0.0 OK\r\n").await?,
+            "NOOP" => {
+                write
+                    .write_all(b"250 2.0.0 I have successfully done nothing\r\n")
+                    .await?;
+            }
             "QUIT" => {
                 write.write_all(b"221 2.0.0 Bye\r\n").await?;
                 return Ok(Outcome::Done);
@@ -245,14 +270,38 @@ where
                     .write_all(b"454 4.7.0 TLS not available on this connection\r\n")
                     .await?;
             }
-            "" => write.write_all(b"500 5.5.2 Error: bad syntax\r\n").await?,
+            // Answered before the verb table, as go-smtp does: it accepts
+            // `VRFY` and refuses to answer it, rather than not knowing it.
+            // The difference is `252` — "send anyway" — against a `500` that
+            // tells a probing sender the command does not exist.
+            "VRFY" => {
+                write
+                    .write_all(b"252 2.5.0 Cannot VRFY user, but will accept message\r\n")
+                    .await?;
+            }
+            "" => {
+                write.write_all(b"500 5.5.2 Error: bad syntax\r\n").await?;
+                write.flush().await?;
+                if protocol_error(&mut errors, &mut write).await? {
+                    return Ok(Outcome::Done);
+                }
+                continue;
+            }
             _ => {
+                // "errors" plural, matching go-smtp's own wording. It reads
+                // like a typo because it is one; a sender logging the reply
+                // gets the same string from either implementation.
                 write
                     .write_all(
-                        format!("500 5.5.2 Syntax error, {verb} command unrecognized\r\n")
+                        format!("500 5.5.2 Syntax errors, {verb} command unrecognized\r\n")
                             .as_bytes(),
                     )
                     .await?;
+                write.flush().await?;
+                if protocol_error(&mut errors, &mut write).await? {
+                    return Ok(Outcome::Done);
+                }
+                continue;
             }
         }
         write.flush().await?;
@@ -264,7 +313,7 @@ where
 /// The capability list and its order match go-smtp's for the options this
 /// relay sets: SMTPUTF8 on, TLS configured, no size or recipient limits, and
 /// no authentication.
-pub fn ehlo_response(cfg: &Config) -> String {
+pub fn ehlo_response(cfg: &Config, domain: &str) -> String {
     let mut caps: Vec<String> = vec![
         "PIPELINING".into(),
         "8BITMIME".into(),
@@ -279,7 +328,11 @@ pub fn ehlo_response(cfg: &Config) -> String {
     }
     caps.push("SIZE".into());
 
-    let mut out = format!("250-{} greets you\r\n", cfg.hostname);
+    // go-smtp echoes the domain the client named, not its own hostname
+    // (`conn.go`'s `args := []string{"Hello " + domain}`). Advertising the
+    // relay's own name here reads as more informative and is simply a
+    // different string on the wire.
+    let mut out = format!("250-Hello {domain}\r\n");
     let last = caps.len() - 1;
     for (i, cap) in caps.iter().enumerate() {
         let sep = if i == last { ' ' } else { '-' };
@@ -289,10 +342,61 @@ pub fn ehlo_response(cfg: &Config) -> String {
 }
 
 /// Split a command line into its verb (upper-cased) and the rest.
-fn split_command(line: &str) -> (String, &str) {
-    let line = line.trim_start();
-    let end = line.find(char::is_whitespace).unwrap_or(line.len());
-    (line[..end].to_uppercase(), line[end..].trim_start())
+/// Split a command line **exactly as go-smtp's `parseCmd` does**.
+///
+/// Its rule is not "split on the first space": a verb is always **four
+/// characters**, and anything else is a parse error rather than an unknown
+/// command. `NONSENSE` is refused for its shape, never looked up, and answered
+/// `501 Bad command` — not the `500 … unrecognized` an unknown four-letter
+/// verb gets. A client can tell the two apart, and this port answered 500 for
+/// both until the dialogue was compared against the running oracle.
+///
+/// `STARTTLS` is the one exception, matched by prefix before the length rules
+/// it would otherwise fail.
+fn split_command(line: &str) -> Result<(String, &str), BadCommand> {
+    let line = line.trim_end_matches(['\r', '\n']);
+    if line.len() >= 8 && line[..8].eq_ignore_ascii_case("STARTTLS") {
+        return Ok(("STARTTLS".to_string(), ""));
+    }
+    match line.len() {
+        0 => Ok((String::new(), "")),
+        // Too short to be a verb.
+        l if l < 4 => Err(BadCommand),
+        4 => Ok((line.to_uppercase(), "")),
+        // Too long to be only a verb, too short to carry an argument.
+        5 => Err(BadCommand),
+        _ if !line.is_char_boundary(4) || line.as_bytes()[4] != b' ' => Err(BadCommand),
+        _ => Ok((line[..4].to_uppercase(), line[5..].trim())),
+    }
+}
+
+/// A line whose *shape* is wrong, as distinct from a verb nobody implements.
+pub struct BadCommand;
+
+/// go-smtp hangs up after **more than three** protocol errors, and says so
+/// first. Only three replies count towards it — a bad command shape, an empty
+/// command, and an unknown verb. A malformed `MAIL FROM` does not: those are
+/// answered and forgiven, because a sender that gets its arguments wrong is
+/// still speaking SMTP.
+///
+/// Returns `true` when the connection should close.
+const ERROR_THRESHOLD: u32 = 3;
+
+async fn protocol_error<W: tokio::io::AsyncWrite + Unpin>(
+    errors: &mut u32,
+    write: &mut W,
+) -> std::io::Result<bool> {
+    use tokio::io::AsyncWriteExt as _;
+    *errors += 1;
+    if *errors > ERROR_THRESHOLD {
+        // "Quiting", one t, is go-smtp's spelling.
+        write
+            .write_all(b"500 5.5.1 Too many errors. Quiting now\r\n")
+            .await?;
+        write.flush().await?;
+        return Ok(true);
+    }
+    Ok(false)
 }
 
 /// Pull the address out of `FROM:<a@b>` or `TO:<a@b>`, ignoring any ESMTP

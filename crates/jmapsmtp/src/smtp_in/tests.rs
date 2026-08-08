@@ -9,15 +9,52 @@ use pretty_assertions::assert_eq;
 
 // ── command splitting ─────────────────────────────────────────────────────
 
+/// go-smtp's `parseCmd`, which is **not** "split on the first space": a verb
+/// is exactly four characters and anything else is a bad *shape*, answered
+/// `501 Bad command` rather than looked up and answered `500 … unrecognized`.
+///
+/// The rules were taken from the running oracle, not from this description —
+/// `smtp_dialogue_interop` drives the same conversation into both servers.
 #[test]
-fn a_verb_is_upper_cased_and_the_rest_kept() {
+fn a_verb_is_four_characters_and_the_rest_is_its_argument() {
+    let ok = |line: &str| split_command(line).ok().map(|(v, r)| (v, r.to_string()));
+
     assert_eq!(
-        split_command("mail FROM:<a@x>"),
-        ("MAIL".into(), "FROM:<a@x>")
+        ok("mail FROM:<a@x>"),
+        Some(("MAIL".into(), "FROM:<a@x>".into()))
     );
-    assert_eq!(split_command("QUIT"), ("QUIT".into(), ""));
-    assert_eq!(split_command("  ehlo  host  "), ("EHLO".into(), "host  "));
-    assert_eq!(split_command(""), (String::new(), ""));
+    assert_eq!(ok("QUIT"), Some(("QUIT".into(), "".into())));
+    assert_eq!(ok(""), Some((String::new(), "".into())));
+    // Trailing whitespace in the argument is trimmed, as `strings.TrimSpace`
+    // does; leading whitespace in the *line* is not, because the fifth byte
+    // is the only thing looked at.
+    assert_eq!(ok("EHLO  host  "), Some(("EHLO".into(), "host".into())));
+
+    // Matched by prefix before any length rule, which it would otherwise
+    // fail — eight characters with no space at index four.
+    assert_eq!(ok("STARTTLS"), Some(("STARTTLS".into(), "".into())));
+    assert_eq!(ok("starttls"), Some(("STARTTLS".into(), "".into())));
+}
+
+/// Every shape that is refused, and why each is distinct.
+///
+/// This used to accept `"  ehlo  host  "` by trimming, which the oracle
+/// refuses: it looks at byte four and nothing else.
+#[test]
+fn a_line_of_the_wrong_shape_is_refused_rather_than_looked_up() {
+    for line in [
+        "AB",               // shorter than a verb
+        "ABC",              //
+        "NOOPX",            // too long for a verb, too short for an argument
+        "NONSENSE",         // byte four is not a space
+        "  ehlo  host  ",   // leading whitespace shifts the verb
+        "MAIL\tFROM:<a@x>", // a tab is not a space
+    ] {
+        assert!(
+            split_command(line).is_err(),
+            "{line:?} should be a bad command, not an unknown one"
+        );
+    }
 }
 
 // ── address paths ─────────────────────────────────────────────────────────
@@ -71,15 +108,23 @@ fn a_malformed_path_is_rejected() {
 
 #[test]
 fn the_ehlo_response_is_a_well_formed_multiline_reply() {
-    let out = ehlo_response(&Config {
-        hostname: "mail.example.com".into(),
-        starttls: true,
-        tls_available: false,
-        enable_smtputf8: true,
-    });
+    let out = ehlo_response(
+        &Config {
+            hostname: "mail.example.com".into(),
+            starttls: true,
+            tls_available: false,
+            enable_smtputf8: true,
+        },
+        "client.invalid",
+    );
     let lines: Vec<&str> = out.trim_end_matches("\r\n").split("\r\n").collect();
 
-    assert_eq!(lines[0], "250-mail.example.com greets you");
+    // **The client's name, not the relay's.** go-smtp echoes the domain the
+    // client gave (`conn.go`'s `"Hello " + domain`); this port advertised its
+    // own hostname until the dialogue was compared against the running
+    // oracle. `smtp_dialogue_interop` is where that is established — this
+    // pins it where the string is built.
+    assert_eq!(lines[0], "250-Hello client.invalid");
     // Every line but the last uses the continuation form.
     for line in &lines[..lines.len() - 1] {
         assert!(line.starts_with("250-"), "{line} should continue");
@@ -93,12 +138,15 @@ fn the_ehlo_response_is_a_well_formed_multiline_reply() {
 
 #[test]
 fn disabling_starttls_and_smtputf8_drops_exactly_those() {
-    let out = ehlo_response(&Config {
-        hostname: "h".into(),
-        starttls: false,
-        tls_available: false,
-        enable_smtputf8: false,
-    });
+    let out = ehlo_response(
+        &Config {
+            hostname: "h".into(),
+            starttls: false,
+            tls_available: false,
+            enable_smtputf8: false,
+        },
+        "client.invalid",
+    );
     assert!(!out.contains("STARTTLS"));
     assert!(!out.contains("SMTPUTF8"));
     assert!(out.contains("250-PIPELINING\r\n"));
@@ -110,12 +158,15 @@ fn disabling_starttls_and_smtputf8_drops_exactly_those() {
 #[test]
 fn auth_is_never_advertised() {
     for starttls in [true, false] {
-        let out = ehlo_response(&Config {
-            hostname: "h".into(),
-            starttls,
-            tls_available: false,
-            enable_smtputf8: true,
-        });
+        let out = ehlo_response(
+            &Config {
+                hostname: "h".into(),
+                starttls,
+                tls_available: false,
+                enable_smtputf8: true,
+            },
+            "client.invalid",
+        );
         assert!(!out.contains("AUTH"), "AUTH must not appear");
     }
 }
