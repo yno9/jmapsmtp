@@ -540,8 +540,15 @@ async fn dispatch(
         "/.well-known/jmap" => handlers::jmap_session(&state, &req),
         "/jmap/api/" => handlers::jmap_api(&state, &req, &body),
         "/account/provision" => handlers::account_provision(&state, &req, &body),
+        // Only in the anchor build, mirroring `routes.rs`: the noanchor build
+        // does not mount these patterns at all, so there is nothing for the
+        // arms to catch and the handlers would not compile — they reach
+        // `state.anchor`, which is itself `cfg(feature = "anchor")`.
+        #[cfg(feature = "anchor")]
         "/account/did" => handlers::account_did(&state, &req, &body),
+        #[cfg(feature = "anchor")]
         "/pkarr/" => handlers::pkarr(&state, &req, &body),
+        #[cfg(feature = "anchor")]
         "/admin/drain-anchor" => handlers::drain_anchor(&state, &req),
         "/account/delete" => handlers::account_delete(&state, &req),
         "/account/storage/purge-messages" => handlers::storage_purge(&state, &req),
@@ -1178,12 +1185,15 @@ mod handlers {
     /// device later" gap for someone else to walk into.
     /// `POST /admin/drain-anchor` — release every claim this relay holds.
     ///
+    /// Absent from the noanchor build, where there is no anchor to drain.
+    ///
     /// The bearer guard is applied in `dispatch`, not here.
     ///
     /// **A partial drain is reported as a failure**, 502 with the report as
     /// the body: any name in `failed` may still hold a claim, and a claim left
     /// behind blocks a legitimately different relay from ever taking that
     /// name. An operator reading only the status must not be told "done".
+    #[cfg(feature = "anchor")]
     pub fn drain_anchor(state: &RelayState, req: &Request<()>) -> Response<Body> {
         if req.method() != axum::http::Method::POST {
             return method_not_allowed();
@@ -1220,6 +1230,7 @@ mod handlers {
     /// and the signature is what protects it. The relay's own token is added
     /// on the way out, because the anchor's gateway is for its relays and not
     /// for the world.
+    #[cfg(feature = "anchor")]
     pub fn pkarr(state: &RelayState, req: &Request<()>, body: &[u8]) -> Response<Body> {
         use crate::pkarr::Action;
         let mut res = (|| {
@@ -1265,6 +1276,7 @@ mod handlers {
     ///
     /// The account is taken from the credential and never from the body; see
     /// `did_bind`'s header for why that is the whole security property here.
+    #[cfg(feature = "anchor")]
     pub fn account_did(state: &RelayState, req: &Request<()>, body: &[u8]) -> Response<Body> {
         let mut res = (|| {
             if req.method() == axum::http::Method::OPTIONS {

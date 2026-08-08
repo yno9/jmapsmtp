@@ -37,6 +37,15 @@ pub struct Options {
     pub keep: bool,
     /// Prove the harness can fail — see `self_test`.
     pub self_test: bool,
+    /// Compare the **noanchor** builds instead: `go build -tags noanchor`
+    /// against `cargo build --no-default-features`.
+    ///
+    /// A separate mode rather than a second scenario, because it is a
+    /// different pair of binaries with a different route table — three
+    /// patterns are absent on both sides — and comparing an anchored build
+    /// against an anchorless one would report that difference on every step
+    /// that touches them.
+    pub noanchor: bool,
 }
 
 pub fn run(opts: Options) -> Result<()> {
@@ -49,7 +58,16 @@ pub fn run(opts: Options) -> Result<()> {
     }
 
     let root = workspace_root()?;
-    let oracle = root.join("oracle/jmapsmtp-oracle");
+    // The two builds are separate binaries on both sides. `just oracle` makes
+    // both Go ones; the justfile builds the Rust noanchor one into its own
+    // target directory, because `--no-default-features` would otherwise
+    // overwrite the anchored `target/debug/jmapsmtp` and the next anchored run
+    // would silently compare the wrong build.
+    let oracle = if opts.noanchor {
+        root.join("oracle/jmapsmtp-oracle-noanchor")
+    } else {
+        root.join("oracle/jmapsmtp-oracle")
+    };
     if !oracle.exists() {
         bail!(
             "oracle binary not found at {} — run `just oracle` first",
@@ -60,17 +78,35 @@ pub fn run(opts: Options) -> Result<()> {
     let (left_bin, right_bin, right_label) = if opts.both_oracle {
         (oracle.clone(), oracle.clone(), "oracle(B)")
     } else {
-        let port = root.join("target/debug/jmapsmtp");
+        let port = if opts.noanchor {
+            root.join("target/noanchor/debug/jmapsmtp")
+        } else {
+            root.join("target/debug/jmapsmtp")
+        };
         if !port.exists() {
             bail!(
-                "port binary not found at {} — run `cargo build` first",
-                port.display()
+                "port binary not found at {} — run `cargo build{}` first",
+                port.display(),
+                if opts.noanchor {
+                    " --no-default-features"
+                } else {
+                    ""
+                }
             );
         }
-        (oracle.clone(), port, "rust")
+        let label = if opts.noanchor {
+            "rust(noanchor)"
+        } else {
+            "rust"
+        };
+        (oracle.clone(), port, label)
     };
 
-    let work = root.join("target/difftest");
+    let work = root.join(if opts.noanchor {
+        "target/difftest-noanchor"
+    } else {
+        "target/difftest"
+    });
     std::fs::create_dir_all(&work)?;
 
     println!("difftest: oracle(A) vs {right_label}");

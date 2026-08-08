@@ -412,6 +412,54 @@ pub fn raw_full_header(
     )
 }
 
+/// The status line and nothing else.
+///
+/// For a caller that only wants the code. `/jmap/eventsource/` is a
+/// Server-Sent Events stream and holds the connection open by design, so
+/// reading to EOF there means waiting out the socket timeout — 10s per
+/// request, which turned a route sweep into a 40-second test. The status line
+/// arrives immediately either way, and closing early leaves the server with a
+/// broken pipe on a route whose whole job is to be disconnected from.
+pub fn raw_status(
+    port: u16,
+    method: &str,
+    target: &str,
+    body: Option<&str>,
+    basic_auth: Option<&str>,
+    extra: Option<(&str, &str)>,
+) -> u16 {
+    let mut s = TcpStream::connect(format!("127.0.0.1:{port}")).unwrap();
+    s.set_read_timeout(Some(std::time::Duration::from_secs(10)))
+        .unwrap();
+    write!(
+        s,
+        "{method} {target} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n"
+    )
+    .unwrap();
+    if let Some((name, value)) = extra {
+        write!(s, "{name}: {value}\r\n").unwrap();
+    }
+    if let Some(auth) = basic_auth {
+        write!(s, "Authorization: Basic {auth}\r\n").unwrap();
+    }
+    match body {
+        Some(b) => write!(
+            s,
+            "Content-Type: application/json\r\nContent-Length: {}\r\n\r\n{b}",
+            b.len()
+        )
+        .unwrap(),
+        None => write!(s, "\r\n").unwrap(),
+    }
+    s.flush().unwrap();
+    let mut line = String::new();
+    std::io::BufReader::new(s).read_line(&mut line).unwrap_or(0);
+    line.split_whitespace()
+        .nth(1)
+        .and_then(|c| c.parse().ok())
+        .unwrap_or(0)
+}
+
 /// The response headers, lowercased.
 pub fn raw_headers(port: u16, target: &str) -> std::collections::BTreeMap<String, String> {
     raw_request(port, target).3

@@ -105,6 +105,18 @@ oracle-check: oracle
 difftest *ARGS: build
     cargo run -p xtask -- difftest {{ARGS}}
 
+# The same comparison for the anchorless pair. A whole build configuration
+# that had never been compared against its Go counterpart — the route table
+# differs by three patterns and the DID refusals differ in wording, and none
+# of it was checked.
+#
+# Its own target directory: `--no-default-features` writes the same path as
+# the anchored build, so sharing one would leave `just difftest` comparing a
+# noanchor binary without saying so.
+difftest-noanchor *ARGS: oracle
+    CARGO_TARGET_DIR=target/noanchor cargo build --no-default-features -p jmapsmtp
+    cargo run -p xtask -- difftest --noanchor {{ARGS}}
+
 # Oracle vs oracle. Proves the normalisation filters strip only genuine
 # non-determinism; must pass before `difftest` means anything.
 difftest-oracle *ARGS:
@@ -132,6 +144,11 @@ difftest-filters:
 difftest-check: difftest-selftest difftest-oracle
 
 # The full acceptance run: the harness proves it can fail, the oracle agrees
-# with itself, and then this port is compared against it. The last of these was
-# deferred from M4 until the port served HTTP; it does now.
-check: lint test difftest-check difftest
+# with itself, and then this port is compared against it — in **both** build
+# configurations.
+#
+# `build-noanchor` is here because it broke once without anyone noticing: the
+# anchor handlers reached a field that only exists in the anchor build, and
+# nothing in `check` compiled the other one. A configuration that is never
+# built is not supported, whatever the README says.
+check: lint build-noanchor test difftest-check difftest difftest-noanchor

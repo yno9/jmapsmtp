@@ -576,8 +576,16 @@ HTTP 層（axum ルータ・CORS・SSE）と全体 difftest は **M6 に繰り�
    5 件では unstable ソートに変異させても同じ順序が出て通ってしまった
 2. **本番相当での 24 時間動作**（M8 の完了条件のうち唯一未実施）。
    biset クライアントを実際に繋いだ確認も未実施
-3. `cargo build --no-default-features` と `go build -tags noanchor` の
-   difftest 比較は**単体テストでは見ているが、difftest では走らせていない**
+3. ~~`cargo build --no-default-features` と `go build -tags noanchor` の difftest 比較~~
+   → **`just difftest-noanchor` を作って `check` に入れた。**
+   49 steps 差分なし。noanchor では `/account/did` が **404**
+   （ルート未 mount、mux 既定の CORS）、アンカー版は **400**
+   （ルート固有の CORS）—— 別のバイナリを比較していることの証拠。
+
+   **この作業中に noanchor ビルドが壊れていたことが分かった。**
+   M9 のハンドラが `state.anchor`（`cfg(feature = "anchor")`）を
+   無条件に参照していた。`check` が noanchor をビルドしていなかったので
+   誰も気づかなかった。`build-noanchor` も `check` に入れた。
 
 なお §4 の「ルーティングは axum」は M6d で**取り下げた**。
 二重登録 panic・サブツリー一致・リダイレクトが観測可能な挙動なので、

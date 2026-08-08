@@ -29,7 +29,7 @@ use jmapsmtp::routes::route_specs;
 use jmapsmtp::server::RelayState;
 
 mod oracle_harness;
-use oracle_harness::{free_port, raw_full};
+use oracle_harness::{free_port, raw_status};
 
 const AUTH_TOKEN: &[u8] = b"route-coverage-token-0000000000";
 const BEARER: &str = "route-coverage-bearer";
@@ -149,18 +149,23 @@ fn check(anchored: bool) {
             // Everything a handler could ask for, at once. A route that wants
             // one and gets the other answers 401 or 403 — an opinion, which
             // is all this test needs; it is looking for silence.
-            let (status, body, _, _) =
-                raw_full(server.port, method, &path, Some("{}"), Some(&basic));
-            if status == 501 {
-                unhandled.push(format!(
-                    "{method} {path} (as an account) -> {}",
-                    body.trim()
-                ));
+            //
+            // Status line only: `/jmap/eventsource/` streams and never closes,
+            // so reading its body means waiting out the socket timeout.
+            let as_account = raw_status(server.port, method, &path, Some("{}"), Some(&basic), None);
+            if as_account == 501 {
+                unhandled.push(format!("{method} {path} (as an account)"));
             }
-            let (status, body, _, _) =
-                raw_full_bearer(server.port, method, &path, Some("{}"), &bearer);
-            if status == 501 {
-                unhandled.push(format!("{method} {path} (as admin) -> {}", body.trim()));
+            let as_admin = raw_status(
+                server.port,
+                method,
+                &path,
+                Some("{}"),
+                None,
+                Some(("Authorization", &bearer)),
+            );
+            if as_admin == 501 {
+                unhandled.push(format!("{method} {path} (as admin)"));
             }
         }
     }
@@ -199,26 +204,11 @@ fn an_unregistered_path_still_answers_something_other_than_a_handler() {
     let tmp = tempfile::tempdir().unwrap();
     seed(tmp.path());
     let server = Server::start(tmp.path(), config(1, true));
-    let (status, _, _, _) = raw_full(server.port, "GET", "/no/such/route", None, None);
+    let status = raw_status(server.port, "GET", "/no/such/route", None, None, None);
     server.stop();
     assert_eq!(
         status, 404,
         "an unregistered path is a 404 from the mux; if this became 501 the \
          coverage test above would be reporting the mux, not missing handlers"
     );
-}
-
-fn raw_full_bearer(
-    port: u16,
-    method: &str,
-    target: &str,
-    body: Option<&str>,
-    bearer: &str,
-) -> (
-    u16,
-    String,
-    String,
-    std::collections::BTreeMap<String, String>,
-) {
-    oracle_harness::raw_full_header(port, method, target, body, "Authorization", bearer)
 }

@@ -28,6 +28,7 @@ fn main() -> Result<()> {
             show_filters: has(flags, "--show-filters"),
             keep: has(flags, "--keep"),
             self_test: has(flags, "--self-test"),
+            noanchor: has(flags, "--noanchor"),
         }),
         "bench" => bench::run(bench::Options {
             iterations: value(flags, "--iterations").unwrap_or(200),
@@ -96,6 +97,8 @@ xtask — development tasks
 
       --both-oracle    Run the Go oracle on BOTH sides. Must pass before a
                        run against the Rust port means anything.
+      --noanchor       Compare the noanchor builds: `go build -tags noanchor`
+                       against `cargo build --no-default-features`.
       --self-test      Prove the harness can fail: run the oracle against a
                        deliberately mutated copy of itself and require every
                        mutation to be caught.

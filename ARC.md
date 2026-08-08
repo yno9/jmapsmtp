@@ -173,6 +173,13 @@ against the Go implementation **running**:
   helper programs linked against the real packages.
 - **`just difftest --self-test`** — the harness proving it can fail, by
   mutating the oracle.
+- **`just difftest-noanchor`** — the same 49 steps against the *anchorless*
+  pair: `go build -tags noanchor` versus `cargo build --no-default-features`.
+  A whole build configuration that had never been compared.
+- **`no_route_answers_501`** — walks the route table and fails on any pattern
+  with no handler behind it. Three shipped; each was found by a person using
+  the relay, not by a test, because each comparison above missed it for a
+  different reason.
 
 `just check` runs all of it.
 

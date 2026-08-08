@@ -25,6 +25,9 @@ pub mod config;
 pub mod customdomain;
 pub mod delivery;
 pub mod devices;
+/// The DID-binding decision. Anchor build only — an anchorless relay
+/// refuses a DID outright and never reaches this.
+#[cfg(feature = "anchor")]
 pub mod did_bind;
 pub mod dkim;
 pub mod dns;
@@ -35,6 +38,9 @@ pub mod inbound_tls;
 pub mod maintenance;
 pub mod outbound;
 pub mod pgp;
+/// The Pkarr gateway's routing decision. Anchor build only: without one
+/// there is no DHT node to forward to.
+#[cfg(feature = "anchor")]
 pub mod pkarr;
 pub mod provision;
 pub mod routes;
