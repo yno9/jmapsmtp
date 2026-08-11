@@ -82,6 +82,12 @@ impl Delivery {
         let Some(mut message) = jmapserver::parse_mime_email(raw, received_at.as_str()) else {
             return Err(std::io::Error::other("unparseable message"));
         };
+        // …and so is one that *parses* into nothing, which is the case the
+        // sentence above described and the code did not check. See
+        // `carries_nothing`.
+        if carries_nothing(&message) {
+            return Err(std::io::Error::other("message carries nothing"));
+        }
         // The id is derived from the RFC Message-ID where there is one, so a
         // redelivery — a retry, or a second MX — overwrites rather than
         // duplicating.
@@ -150,6 +156,32 @@ impl Delivery {
             },
         );
     }
+}
+
+/// Whether a parsed message carries nothing a person could read or reply to.
+///
+/// `parse_mime_email` answers `Some` for input that is not a message at all:
+/// six bytes with no headers parse into an `Email` with no addresses, no
+/// subject, no Message-ID, and a body part whose value is absent. Filing that
+/// puts a row in the inbox that renders as nothing, cannot be opened, and
+/// therefore **can never be marked read** — the account's unread count stops
+/// at that number for ever.
+///
+/// Found that way: four probes I sent into port 25 while debugging delivery on
+/// 2026-08-10 (six and twelve bytes) left four such rows, and the user's unread
+/// counter sat at 4 with nothing to click. `store_message`'s own comment
+/// already said an entry with no headers and no body is worse than an absence;
+/// only the `None` half of it was implemented.
+///
+/// Deliberately conservative — every clause must hold. A message from a broken
+/// sender with no `From` still has a body, and one with an empty body still
+/// has headers; either is real mail and is kept. Only something with no trace
+/// of a sender, a recipient, a subject, an id *and* no body text is refused.
+pub fn carries_nothing(m: &jmap_types::email::Email) -> bool {
+    let no_correspondent =
+        m.from.is_empty() && m.sender.is_empty() && m.to.is_empty() && m.cc.is_empty();
+    let no_body = m.body_values.values().all(|v| v.value.trim().is_empty());
+    no_correspondent && m.subject.trim().is_empty() && m.message_id.is_empty() && no_body
 }
 
 fn now_millis() -> i64 {
