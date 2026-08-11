@@ -10,7 +10,6 @@
 //! establishes that the filters strip only genuine non-determinism.
 
 mod bench;
-mod bindprobe;
 mod difftest;
 
 use anyhow::{Result, bail};
@@ -34,14 +33,6 @@ fn main() -> Result<()> {
             iterations: value(flags, "--iterations").unwrap_or(200),
             messages: value(flags, "--messages").unwrap_or(1000),
         }),
-        "bind-probe" => bindprobe::run(bindprobe::Options {
-            relay: text(flags, "--relay").unwrap_or_else(|| "http://127.0.0.1:8767".into()),
-            account: text(flags, "--account").unwrap_or_default(),
-            token: text(flags, "--token").unwrap_or_default(),
-            skew: text(flags, "--skew")
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(0),
-        }),
         "help" | "--help" | "-h" => {
             help();
             Ok(())
@@ -55,20 +46,6 @@ fn main() -> Result<()> {
 
 fn has(flags: &[String], name: &str) -> bool {
     flags.iter().any(|f| f == name)
-}
-
-/// `--name=value` or `--name value`, as a string.
-fn text(flags: &[String], name: &str) -> Option<String> {
-    let prefix = format!("{name}=");
-    for (i, f) in flags.iter().enumerate() {
-        if let Some(v) = f.strip_prefix(&prefix) {
-            return Some(v.to_string());
-        }
-        if f == name {
-            return flags.get(i + 1).cloned();
-        }
-    }
-    None
 }
 
 /// `--name=value` or `--name value`.
@@ -106,11 +83,6 @@ xtask — development tasks
       --keep           Keep the working directories even on success.
 
   bench [--iterations N] [--messages N]
-
-  bind-probe --relay URL --account a@b --token TOKEN [--skew SECONDS]
-
-      Sign a DID binding the way biset does and present it to a running
-      relay. Proves the identity path end to end: client, relay and anchor.
 
       Time the Go oracle and this port over the same requests and report
       both. Needs `cargo build --release`; refuses to bench a debug build.

@@ -15,9 +15,6 @@ reqwest = { workspace = true, features = ["blocking"] }
 regex.workspace = true
 sha2.workspace = true
 base64.workspace = true
-ed25519-dalek.workspace = true
-getrandom = "0.3"
-jmapserver = { path = "../crates/jmapserver" }
 
 [lints]
 workspace = true

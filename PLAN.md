@@ -617,6 +617,9 @@ HTTP 層（axum ルータ・CORS・SSE）と全体 difftest は **M6 に繰り�
    ~~biset クライアントを実際に繋いだ確認~~
    → `xtask bind-probe` で DID バインドを本物の anchor 相手に通した
    （204 / 401 / 409 の 3 verdict すべて観測）。
+   ※ 2026-08-11: この道具は did:dht と一緒に削除した。識別子がそのまま
+   鍵である did:dht だから、その場で身元を合成して自己完結できた。
+   did:webvh では公開済みのログが要るので同じことはできない（SPEC §11.27）。
 3. ~~`cargo build --no-default-features` と `go build -tags noanchor` の difftest 比較~~
    → **`just difftest-noanchor` を作って `check` に入れた。**
    49 steps 差分なし。noanchor では `/account/did` が **404**

@@ -19,10 +19,6 @@ or any JMAP client.
 > did:dht is not implemented here at all — the Go build still has it, and that
 > is the widest declared divergence in the port (SPEC.md §11.27).
 >
-> A DID binding has been driven end to end against a live anchor —
-> `xtask bind-probe` signs the statement biset defines and presents it — with
-> the rejections checked too, so an accepted binding means the anchor looked.
->
 > It runs in a real deployment, serving JMAP over HTTPS with a live anchor.
 >
 > A few behaviours differ from the Go build on purpose, and one of them
