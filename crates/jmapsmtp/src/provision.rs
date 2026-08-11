@@ -208,14 +208,17 @@ pub fn name_is_taken(
 }
 
 /// How this relay can check the DID's vouch for the device.
+///
+/// There used to be a third answer, `Local`: a `did:dht` identifier *is* the
+/// identity's raw ed25519 key, so a vouch could be verified from the string
+/// with no anchor and no network. That was the only way an anchorless relay
+/// could serve a DID account. did:dht is gone, and with it that shortcut — a
+/// `did:webvh` root key lives only in a resolved log, never in the identifier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VouchPath {
-    /// `did:dht`: the identifier is the key, so verify here. No anchor, no
-    /// network — this is what lets an anchorless relay serve DID accounts.
-    Local,
-    /// Any other method: only the anchor can resolve a key for it.
+    /// Only the anchor can resolve a key for the DID.
     Anchor,
-    /// Any other method, and there is no anchor. Nothing can check it.
+    /// There is no anchor. Nothing can check it.
     Impossible,
 }
 
@@ -228,13 +231,11 @@ pub fn anchor_configured(cfg: &Config) -> bool {
 }
 
 /// Pick the vouch path for a DID.
-pub fn vouch_path(cfg: &Config, did: &str) -> VouchPath {
-    if did.starts_with("did:dht:") {
-        // Note this is checked *before* the anchor: a did:dht vouch is
-        // verified locally even on an anchored relay, because the identifier
-        // carries the key and a round trip would add nothing.
-        return VouchPath::Local;
-    }
+///
+/// `did` is no longer inspected: every method this relay serves needs the
+/// anchor. Kept as a parameter because the caller has one and a signature
+/// that stops mentioning it would hide that the question is about a DID.
+pub fn vouch_path(cfg: &Config, _did: &str) -> VouchPath {
     if anchor_configured(cfg) {
         VouchPath::Anchor
     } else {

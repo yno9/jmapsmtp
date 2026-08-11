@@ -12,6 +12,13 @@ use std::path::Path;
 use jmapsmtp::config::Config;
 use jmapsmtp::server::RelayState;
 
+/// Whether the port's own data directory holds that account. The two servers
+/// share a data directory in this suite, so "created" has to be asked about
+/// the specific name each side was given.
+fn ours_data_dir_has(o: &Oracle, localpart: &str) -> bool {
+    o.data_dir().join("open.test").join(localpart).exists()
+}
+
 mod oracle_harness;
 use oracle_harness::{Oracle, free_port};
 
@@ -476,7 +483,7 @@ fn the_jmap_session_and_api_agree() {
 /// Provisioning, end to end, on both servers — with a genuine did:dht
 /// identity and a real vouch, since the whole flow turns on the signature.
 #[test]
-fn provisioning_creates_the_same_account_on_both_servers() {
+fn the_oracle_provisions_a_did_dht_identity_and_this_port_refuses_it() {
     use base64::Engine as _;
     use ed25519_dalek::{Signer as _, SigningKey};
 
@@ -488,7 +495,7 @@ fn provisioning_creates_the_same_account_on_both_servers() {
         let root = SigningKey::from_bytes(&[seed; 32]);
         let did = format!(
             "did:dht:{}",
-            jmapserver::diddht::zbase32_encode(&root.verifying_key().to_bytes())
+            jmapserver::zbase32::encode(&root.verifying_key().to_bytes())
         );
         let device = SigningKey::from_bytes(&[seed.wrapping_add(1); 32]);
         let device_id = base64::engine::general_purpose::URL_SAFE_NO_PAD
@@ -499,7 +506,7 @@ fn provisioning_creates_the_same_account_on_both_servers() {
             .as_secs() as i64;
         let sig = base64::engine::general_purpose::STANDARD.encode(
             root.sign(
-                jmapserver::diddht::vouch_statement(&did, &device_id, "Laptop", ts).as_bytes(),
+                jmapserver::devicebind::vouch_statement(&did, &device_id, "Laptop", ts).as_bytes(),
             )
             .to_bytes(),
         );
@@ -516,22 +523,32 @@ fn provisioning_creates_the_same_account_on_both_servers() {
     // other's — they share a data directory.
     let (go_status, go_body) = o.post_json("/account/provision", &make(31, "viaoracle"));
     assert_eq!(go_status, 201, "{go_body}");
+    let go: serde_json::Value = serde_json::from_str(&go_body).unwrap();
+    assert_eq!(go["email"], "viaoracle@open.test");
+
+    // This port refuses: the vouch is for a did:dht identity, which it no
+    // longer verifies, and there is no anchor to ask. The account the oracle
+    // created is one this relay would not have. SPEC.md §11.27.
     let (our_status, our_body) =
         oracle_harness::raw_post(ours.port, "/account/provision", &make(41, "viaport"));
-    assert_eq!(our_status, 201, "{our_body}");
-
-    let go: serde_json::Value = serde_json::from_str(&go_body).unwrap();
-    let mine: serde_json::Value = serde_json::from_str(&our_body).unwrap();
-    assert_eq!(go["email"], "viaoracle@open.test");
-    assert_eq!(mine["email"], "viaport@open.test");
     assert_eq!(
-        mine["did_bound"], go["did_bound"],
-        "neither relay has an anchor, so neither binds"
+        our_status, 401,
+        "expected the anchor refusal, got {our_body:?}"
+    );
+    assert!(
+        our_body.contains("identity anchor"),
+        "and for the stated reason: {our_body:?}"
+    );
+    assert!(
+        !ours_data_dir_has(&o, "viaport"),
+        "a refused provision must create nothing"
     );
 
-    // Both accounts are on disk in the same shape: a device key and no static
-    // credential.
-    for lp in ["viaoracle", "viaport"] {
+    // The account the oracle created is on disk in the expected shape: a
+    // device key and no static credential. There is no `viaport` to check —
+    // this port refused it above.
+    {
+        let lp = "viaoracle";
         let acct = o.data_dir().join("open.test").join(lp);
         assert_eq!(
             jmapserver::devicekeys::list_device_keys(&acct).len(),
@@ -544,12 +561,17 @@ fn provisioning_creates_the_same_account_on_both_servers() {
         );
     }
 
-    // …and each refuses the other's name, from either server.
-    let (status, _) = o.post_json("/account/provision", &make(51, "viaport"));
-    assert_eq!(status, 409, "the oracle sees the account this port created");
+    // This port sees the account the oracle created, in the shared data
+    // directory, and refuses the name. The mirror of this — the oracle seeing
+    // an account this port created — has nothing to look at any more: the
+    // creation above is refused here. The collision check itself is what
+    // matters and it is exercised in the direction that still exists.
     let (status, _) =
         oracle_harness::raw_post(ours.port, "/account/provision", &make(61, "viaoracle"));
-    assert_eq!(status, 409, "and this port sees the oracle's");
+    assert_eq!(
+        status, 409,
+        "this port must see the oracle's account, not re-create it"
+    );
 
     ours.stop();
 }
@@ -608,7 +630,7 @@ fn provisioning_refuses_identically() {
                 let root = SigningKey::from_bytes(&[71u8; 32]);
                 let did = format!(
                     "did:dht:{}",
-                    jmapserver::diddht::zbase32_encode(&root.verifying_key().to_bytes())
+                    jmapserver::zbase32::encode(&root.verifying_key().to_bytes())
                 );
                 let device = SigningKey::from_bytes(&[72u8; 32]);
                 let device_id = base64::engine::general_purpose::URL_SAFE_NO_PAD
@@ -619,7 +641,7 @@ fn provisioning_refuses_identically() {
                     .as_secs() as i64;
                 let sig = base64::engine::general_purpose::STANDARD.encode(
                     root.sign(
-                        jmapserver::diddht::vouch_statement(&did, &device_id, "Laptop", ts)
+                        jmapserver::devicebind::vouch_statement(&did, &device_id, "Laptop", ts)
                             .as_bytes(),
                     )
                     .to_bytes(),
@@ -637,6 +659,19 @@ fn provisioning_refuses_identically() {
         let (go_status, go_body) = o.post_json("/account/provision", &req);
         let (our_status, our_body) =
             oracle_harness::raw_post(ours.port, "/account/provision", &req);
+        // Only where the vouch path decides. A bad username is refused by
+        // `validate` on both sides, long before any DID is looked at, and
+        // those must still match exactly.
+        let vouch_decided = go_status == 201 || go_body.contains("device vouch rejected");
+        if vouch_decided {
+            // The oracle judged the vouch and rejected it; this port cannot
+            // judge and says so. Both refuse and neither creates an account —
+            // the reason is what diverges. SPEC.md §11.27.
+            assert_eq!(our_status, 401, "{name}: {our_body:?}");
+            assert!(our_body.contains("identity anchor"), "{name}: {our_body:?}");
+            assert_ne!(our_body, go_body, "{name}: the divergence was not observed");
+            continue;
+        }
         assert_eq!(our_status, go_status, "{name}: oracle said {go_body:?}");
         assert_eq!(our_body, go_body, "{name}");
     }

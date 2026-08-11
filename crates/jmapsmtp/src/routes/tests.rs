@@ -9,23 +9,22 @@ fn cfg(json: &str) -> Config {
     serde_json::from_str(json).expect("config should parse")
 }
 
-/// The gateway needs somewhere to forward to, so it appears only once an
-/// anchor is configured — not merely because the build has anchor support.
+/// `/pkarr/` forwarded a did:dht record to the anchor's DHT node. It went
+/// with did:dht, and must not come back by accident — an open route that
+/// proxies a client's bytes to another host is not something to reintroduce
+/// without meaning to.
 #[test]
-fn the_pkarr_gateway_needs_an_anchor_url() {
+fn the_pkarr_gateway_is_gone_in_every_configuration() {
     let anchored =
         cfg(r#"{"domain":{"a.test":{}},"anchor_url":"https://anchor.test","anchor_token":"t"}"#);
-    let specs: Vec<&str> = route_specs(&anchored, false)
-        .iter()
-        .map(|s| s.pattern)
-        .collect();
-    assert_eq!(specs.contains(&"/pkarr/"), cfg!(feature = "anchor"));
-    assert!(
-        !route_specs(&plain(), false)
-            .iter()
-            .any(|s| s.pattern == "/pkarr/"),
-        "anchorless: absent"
-    );
+    for cfg in [&anchored, &plain()] {
+        assert!(
+            !route_specs(cfg, false)
+                .iter()
+                .any(|s| s.pattern == "/pkarr/"),
+            "the pkarr gateway is registered again"
+        );
+    }
 }
 
 fn plain() -> Config {
@@ -111,10 +110,6 @@ fn the_anchor_routes_follow_the_build() {
     let p = patterns(&plain(), false);
     let has_anchor = cfg!(feature = "anchor");
     assert_eq!(p.contains(&"/account/did"), has_anchor);
-    assert!(
-        !p.contains(&"/pkarr/"),
-        "no anchor_url, so nothing to forward to — absent even in the anchor build"
-    );
     assert_eq!(p.contains(&"/admin/drain-anchor"), has_anchor);
 }
 

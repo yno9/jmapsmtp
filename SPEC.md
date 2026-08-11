@@ -1299,6 +1299,55 @@ Go の WKD は `cfg.Domains[d].Accounts[localpart]` を見る。移植も同じ�
 
 ---
 
+### 11.27 did:dht を実装しない（Go は実装している）
+
+biset が did:webvh 一本になったため、移植側から did:dht を削除した。Go は
+持ったままなので、**この差異は宣言済みのものとしては最も広い**。
+
+削除したもの:
+
+- `jmapserver::diddht`（`did_dht_root_key`、`verify_did_dht_vouch_local`）
+- `/pkarr/` ルート（did:dht レコードを anchor の DHT ノードへ中継していた）
+- `provision::VouchPath::Local`
+
+**残したもの。** `diddht.rs` は名前が実態と合っていなかった。中身の大半は
+DID の方式に依らないもので、`devicebind.rs` に移した（biset の
+`src/did/devicebind.ts` と同じ名前 — 文字列の出どころ）:
+`vouch_statement`、`session_login_statement`、`is_fresh`、`verify_signature`、
+`decode_device_key`、`FRESHNESS_WINDOW`。zbase32 は `jmapserver::zbase32` へ。
+**WKD がこれを使っている**ので、一緒に消すと公開鍵ディレクトリが壊れた。
+
+#### 観測できる差異
+
+| 状況 | Go | 移植 |
+|---|---|---|
+| アンカー無しリレー + did:dht の vouch | ローカル検証して 201 | 401「アンカーが要る」 |
+| did:dht の不正な vouch（署名・ラベル・鮮度） | 401「device vouch rejected」 | 503「アンカーが要る」 |
+| `/pkarr/` | 中継する | ルート自体が無い |
+| アンカー未設定時の文言 | "non-did:dht per-device credentials require one" | "per-device credentials require one" |
+
+2 行目が要点で、**どちらも拒否するが理由が違う**。Go は「あなたの署名が
+悪い」と言い、移植側は「判定できない」と言う。後者のほうが正しい——
+判定材料を持っていないので。
+
+#### 検証しなくなったことの明示
+
+did:dht の vouch 署名は、識別子が鍵だったからリレー自身が検証できていた。
+did:webvh にその近道は無く、**リレーは vouch 署名を一切検証しない**
+（アンカーが検証する）。`devices/tests.rs` の
+`a_forged_vouch_is_not_rejected_here_but_sent_to_the_anchor` と
+`a_replayed_label_and_a_stale_timestamp_are_the_anchors_business` が、
+それを不在ではなく**言明**として固定している。この変更の危険な版は、
+検査がどこでも行われなくなったことに誰も気づかない版なので。
+
+#### noanchor ビルドの意味が変わった
+
+アンカー無しリレーが誰かを serve できたのは did:dht があったからで、いまは
+**DID 機能を持たない素の JMAP+SMTP リレー**を意味する。`build-noanchor` と
+`difftest-noanchor` は残してある。
+
+---
+
 ---
 
 ### 11.9 差分ハーネスでの扱い

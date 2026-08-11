@@ -424,59 +424,12 @@ fn an_anchorless_relay_names_the_anchor_and_not_the_missing_signature() {
     ours.stop();
 }
 
-/// `/pkarr/`, the other route that answered 501, compared end to end.
-///
-/// The stub answers with a body containing bytes that are not valid UTF-8, so
-/// a side that decoded the blob as text would mangle it here rather than
-/// passing because the fixture happened to be ASCII. It is a signed DHT
-/// record: one changed byte and the far end rejects it.
-#[test]
-fn pkarr_forwards_and_refuses_exactly_as_the_oracle_does() {
-    let Some((o, ours)) = both() else { return };
-
-    for (method, path, what) in [
-        ("GET", "/pkarr/", "empty key"),
-        ("GET", "/pkarr/abc/def", "key with a slash"),
-        ("DELETE", "/pkarr/abc/def", "bad key AND bad method"),
-        ("DELETE", "/pkarr/abcdef", "unsupported method"),
-        ("OPTIONS", "/pkarr/abcdef", "preflight"),
-    ] {
-        let (go_status, go_body, _, go_h) = raw_full(o.http_port, method, path, None, None);
-        let (our_status, our_body, _, our_h) = raw_full(ours.port, method, path, None, None);
-        assert_eq!(our_status, go_status, "{what}: status");
-        assert_eq!(our_body, go_body, "{what}: body");
-        for h in [
-            "access-control-allow-methods",
-            "access-control-allow-headers",
-        ] {
-            assert_eq!(our_h.get(h), go_h.get(h), "{what}: header {h}");
-        }
-    }
-
-    // The forwarding path itself, in both directions.
-    for (method, body, what) in [
-        ("GET", None, "resolve"),
-        ("PUT", Some("a-signed-record"), "publish"),
-    ] {
-        let (go_status, go_body, _, go_h) =
-            raw_full(o.http_port, method, "/pkarr/abcdef", body, None);
-        let (our_status, our_body, _, our_h) =
-            raw_full(ours.port, method, "/pkarr/abcdef", body, None);
-        assert_eq!(our_status, go_status, "{what}: status");
-        assert_eq!(
-            our_body, go_body,
-            "{what}: the blob must survive byte for byte"
-        );
-        assert_eq!(
-            our_h.get("content-type"),
-            go_h.get("content-type"),
-            "{what}: the far end's Content-Type is copied through"
-        );
-        assert_eq!(go_status, 200, "{what}: the stub should have answered");
-    }
-
-    ours.stop();
-}
+// `/pkarr/` was compared here end to end: this port forwarded a client's
+// signed DHT record to the anchor's node, byte for byte, and the test used a
+// body with invalid UTF-8 so a side that decoded the blob as text would mangle
+// it. The route went with did:dht — the records it carried were did:dht
+// documents — so the oracle still serves it and this port does not.
+// SPEC.md §11.27. `routes::tests` guards against it coming back.
 
 /// The one thing the account **cannot** do: bind a DID to somebody else.
 ///

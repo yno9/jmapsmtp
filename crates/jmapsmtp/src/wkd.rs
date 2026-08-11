@@ -25,12 +25,13 @@ use std::path::{Path, PathBuf};
 /// signature or an integrity check.
 ///
 /// The Go implementation has two copies of z-base-32, one here and one in
-/// `diddht.go`. Verified to agree by running both; this port shares the one
+/// `diddht.go`, whose encoder this port kept as `jmapserver::zbase32` when
+/// did:dht went. Verified to agree by running both; this port shares the one
 /// implementation (SPEC.md §4).
 pub fn wkd_hash(localpart: &str) -> String {
     use sha1::Digest as _;
     let digest = sha1::Sha1::digest(localpart.to_lowercase().as_bytes());
-    jmapserver::diddht::zbase32_encode(&digest)
+    jmapserver::zbase32::encode(&digest)
 }
 
 pub fn pubkey_file(data_dir: &Path, domain: &str, localpart: &str) -> PathBuf {

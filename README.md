@@ -11,10 +11,13 @@ or any JMAP client.
 > 49 requests and reports no undeclared differences.
 >
 > Every route the Go implementation serves is served here, including the three
-> that need an anchor — `PUT /account/did`, the `/pkarr/` gateway and
-> `POST /admin/drain-anchor`. `no_route_answers_501` walks the route table and
-> fails on any pattern with no handler behind it, which is how that claim is
-> kept true rather than restated.
+> that need an anchor — `PUT /account/did` and `POST /admin/drain-anchor`.
+> `no_route_answers_501` walks the route table and fails on any pattern with no
+> handler behind it, which is how that claim is kept true rather than restated.
+>
+> One route is deliberately **not** served: `/pkarr/`, the did:dht gateway.
+> did:dht is not implemented here at all — the Go build still has it, and that
+> is the widest declared divergence in the port (SPEC.md §11.27).
 >
 > A DID binding has been driven end to end against a live anchor —
 > `xtask bind-probe` signs the statement biset defines and presents it — with
@@ -38,7 +41,7 @@ or any JMAP client.
 - PGP encryption at rest (Layer 1: server-side; Layer 2: client E2E via biset-ui)
 - KEK-based auth: Argon2id + AES-GCM + HKDF (`crates/cryptenv`)
 - Per-device ed25519 credentials with revocable session tokens
-- DID identity binding via a standalone identity anchor (optional)
+- DID identity binding (`did:webvh`) via a standalone identity anchor (optional)
 - WKD (Web Key Directory) for public key discovery
 - BYO custom domains with DNS TXT ownership proof
 

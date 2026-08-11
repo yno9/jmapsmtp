@@ -7,7 +7,7 @@
 use super::*;
 use base64::Engine as _;
 use ed25519_dalek::{Signer as _, SigningKey};
-use jmapserver::diddht;
+use jmapserver::devicebind;
 use pretty_assertions::assert_eq;
 
 fn cfg(json: &str) -> Config {
@@ -43,10 +43,12 @@ struct Setup {
 
 fn setup() -> Setup {
     let root = SigningKey::from_bytes(&[9u8; 32]);
-    let did = format!(
-        "did:dht:{}",
-        diddht::zbase32_encode(&root.verifying_key().to_bytes())
-    );
+    // A did:webvh SCID: a hash of the genesis log entry, carrying no key.
+    // The fixture used to be a did:dht identifier — which *was* the key, so
+    // the relay could verify a vouch from the string alone. Nothing can now,
+    // which is why these tests go through the anchor.
+    let did =
+        "did:webvh:QmSCIDPlaceholder1111111111111111111111111111:biset.md:dids:alice".to_string();
     let device = SigningKey::from_bytes(&[10u8; 32]);
     let device_id = b64url(&device.verifying_key().to_bytes());
     Setup {
@@ -68,7 +70,7 @@ impl Setup {
             bind_ts: ts,
             sig: b64(&self
                 .root
-                .sign(diddht::vouch_statement(&self.did, &self.device_id, label, ts).as_bytes())
+                .sign(devicebind::vouch_statement(&self.did, &self.device_id, label, ts).as_bytes())
                 .to_bytes()),
         }
     }
@@ -82,7 +84,9 @@ impl Setup {
             ts,
             sig: b64(&self
                 .device
-                .sign(diddht::session_login_statement(&self.did, &self.device_id, ts).as_bytes())
+                .sign(
+                    devicebind::session_login_statement(&self.did, &self.device_id, ts).as_bytes(),
+                )
                 .to_bytes()),
         }
     }
@@ -152,9 +156,17 @@ fn a_vouch_needs_no_label() {
         s.vouch("", NOW).account(),
         Ok(("alice".into(), "a.test".into()))
     );
+    // An anchored relay routes it to the anchor. It used to be checked here,
+    // against the key inside a did:dht identifier; there is no such key in a
+    // did:webvh SCID, so the answer is now *where to ask*, not *is it good*.
+    assert_eq!(
+        check_vouch(&anchored(), &s.vouch("", NOW), NOW),
+        Ok(crate::provision::VouchPath::Anchor)
+    );
     assert_eq!(
         check_vouch(&anchorless(), &s.vouch("", NOW), NOW),
-        Ok(crate::provision::VouchPath::Local)
+        Err(DeviceError::AnchorRequired),
+        "with no anchor there is nobody to ask"
     );
 }
 
@@ -204,7 +216,7 @@ fn every_login_failure_looks_the_same() {
         SessionRequest {
             device_pub_key: id.clone(),
             sig: b64(&other
-                .sign(diddht::session_login_statement(&s.did, &id, NOW).as_bytes())
+                .sign(devicebind::session_login_statement(&s.did, &id, NOW).as_bytes())
                 .to_bytes()),
             ..s.session(NOW)
         }
@@ -267,14 +279,14 @@ fn a_cold_recovery_needs_no_existing_credential() {
         device_pub_key: new_id.clone(),
         sig: b64(&s
             .root
-            .sign(diddht::vouch_statement(&s.did, &new_id, "Phone", NOW).as_bytes())
+            .sign(devicebind::vouch_statement(&s.did, &new_id, "Phone", NOW).as_bytes())
             .to_bytes()),
         ..s.vouch("Phone", NOW)
     };
 
     assert_eq!(
-        check_vouch(&anchorless(), &req, NOW),
-        Ok(crate::provision::VouchPath::Local)
+        check_vouch(&anchored(), &req, NOW),
+        Ok(crate::provision::VouchPath::Anchor)
     );
     write_device(tmp.path(), "a.test", "alice", &req, NOW).unwrap();
 
@@ -282,52 +294,77 @@ fn a_cold_recovery_needs_no_existing_credential() {
     let session = SessionRequest {
         device_pub_key: new_id.clone(),
         sig: b64(&new_device
-            .sign(diddht::session_login_statement(&s.did, &new_id, NOW).as_bytes())
+            .sign(devicebind::session_login_statement(&s.did, &new_id, NOW).as_bytes())
             .to_bytes()),
         ..s.session(NOW)
     };
     assert!(login(tmp.path(), &session, NOW).is_ok());
 }
 
+// ── what this relay no longer judges ──────────────────────────────────────
+//
+// Three tests used to live here: a vouch the root key did not sign, a vouch
+// replayed under another label, and a stale one. All three were rejected
+// *here*, because a did:dht identifier was the identity's ed25519 key and the
+// relay could check the signature from the string alone.
+//
+// did:webvh has no key in the identifier, so the relay cannot check any of it
+// and does not pretend to. The anchor does. What follows pins that as a
+// statement rather than leaving it as an absence — the dangerous version of
+// this change is the one where the checks quietly stop happening anywhere.
+
+/// A vouch nobody could have signed still reaches the anchor: this relay
+/// reports **where the answer comes from**, not what it is.
 #[test]
-fn a_vouch_the_root_key_did_not_sign_is_rejected() {
+fn a_forged_vouch_is_not_rejected_here_but_sent_to_the_anchor() {
     let s = setup();
     let impostor = SigningKey::from_bytes(&[123u8; 32]);
     let req = VouchRequest {
         sig: b64(&impostor
-            .sign(diddht::vouch_statement(&s.did, &s.device_id, "Laptop", NOW).as_bytes())
+            .sign(devicebind::vouch_statement(&s.did, &s.device_id, "Laptop", NOW).as_bytes())
             .to_bytes()),
         ..s.vouch("Laptop", NOW)
     };
     assert_eq!(
+        check_vouch(&anchored(), &req, NOW),
+        Ok(crate::provision::VouchPath::Anchor),
+        "the relay has no key to check this against; the anchor decides"
+    );
+    assert_eq!(
         check_vouch(&anchorless(), &req, NOW),
-        Err(DeviceError::VouchRejected)
+        Err(DeviceError::AnchorRequired),
+        "and with no anchor it is refused rather than accepted unchecked"
     );
 }
 
-/// A vouch signed for a different label is a different statement, so it does
-/// not transfer — otherwise a captured vouch could be replayed to register the
-/// same key under a name the user would not recognise in their device list.
+/// The same for a replayed label and a stale timestamp. Both were caught here
+/// and are now the anchor's business; neither may be silently accepted by a
+/// relay that cannot judge them.
 #[test]
-fn a_vouch_does_not_transfer_to_another_label() {
+fn a_replayed_label_and_a_stale_timestamp_are_the_anchors_business() {
     let s = setup();
-    let req = VouchRequest {
+    let relabelled = VouchRequest {
         label: "Attacker's box".into(),
         ..s.vouch("Laptop", NOW)
     };
     assert_eq!(
-        check_vouch(&anchorless(), &req, NOW),
-        Err(DeviceError::VouchRejected)
+        check_vouch(&anchored(), &relabelled, NOW),
+        Ok(crate::provision::VouchPath::Anchor)
     );
-}
+    assert_eq!(
+        check_vouch(&anchorless(), &relabelled, NOW),
+        Err(DeviceError::AnchorRequired)
+    );
 
-#[test]
-fn a_stale_vouch_is_rejected() {
-    let s = setup();
     for ts in [NOW - 10_000, NOW + 10_000] {
         assert_eq!(
+            check_vouch(&anchored(), &s.vouch("Laptop", ts), NOW),
+            Ok(crate::provision::VouchPath::Anchor),
+            "ts {ts}"
+        );
+        assert_eq!(
             check_vouch(&anchorless(), &s.vouch("Laptop", ts), NOW),
-            Err(DeviceError::VouchRejected),
+            Err(DeviceError::AnchorRequired),
             "ts {ts}"
         );
     }

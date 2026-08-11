@@ -34,16 +34,27 @@ Three consequences run through the whole design:
   cross-relay information the anchor derives from the claim. A local copy is
   what drifted out of step with the registry before (`provision.go`), and this
   port does not reintroduce one.
-- **`did:dht` and `did:webvh` are not interchangeable.** A `did:dht` identifier
-  *is* the root public key, so a vouch verifies with no network — an anchorless
-  relay can serve those. A `did:webvh` SCID is
+- **Every binding needs the anchor.** A `did:webvh` SCID is
   `base58btc(multihash(JCS(genesis log entry)))`: it self-certifies the DID
-  *document log*, not a signing key, so only the anchor can resolve one.
+  *document log*, not a signing key, so only the anchor can resolve one. This
+  relay therefore does not verify vouch signatures at all — it decides *who to
+  ask*, not *whether they are good*.
+
+  It used to. `did:dht` was the exception: the identifier *is* the root public
+  key, so a vouch verified with no network and an anchorless relay could serve
+  those accounts. biset moved to `did:webvh` alone and the method went with it
+  (SPEC.md §11.27), taking that shortcut and the `/pkarr/` gateway. The Go
+  implementation still has both, which makes this the widest declared
+  divergence in the port.
 - **The signed statements are shared with the client byte for byte.** Three
   implementations — biset, this relay, the anchor — agree on two strings.
 
 The strings come from biset's `src/did/devicebind.ts`, and matching them is
-verified rather than assumed (`crates/jmapserver/src/diddht.rs`).
+verified rather than assumed (`crates/jmapserver/src/devicebind.rs`, which is
+named after it). That module held the statements *and* did:dht until the
+method was removed — filing a statement format under one of the methods that
+happens to use it is why the removal first looked as though it would take
+device binding with it.
 
 ---
 
@@ -182,7 +193,9 @@ against the Go implementation **running**:
   mutating the oracle.
 - **`just difftest-noanchor`** — the same 49 steps against the *anchorless*
   pair: `go build -tags noanchor` versus `cargo build --no-default-features`.
-  A whole build configuration that had never been compared.
+  A whole build configuration that had never been compared. Since did:dht went
+  it means a relay with no DID features at all rather than one that can still
+  serve self-certifying identities.
 - **`no_route_answers_501`** — walks the route table and fails on any pattern
   with no handler behind it. Three shipped; each was found by a person using
   the relay, not by a test, because each comparison above missed it for a
@@ -244,29 +257,12 @@ are listed in SPEC.md §11; the ones that matter most:
 
 ## 9. What is not here
 
-- **A DHT node.** `/pkarr/` forwards a client's `did:dht` record to the
-  anchor's node rather than running one. Every relay used to run its own — its
-  own UDP socket, routing table and republish loop, duplicated per relay. The
-  route stays because the *client's* route stays: biset derives its gateway URL
-  from its own relay and publishes only there, so removing it would strand
-  every loaded client.
-
-  `PUT /account/did` and `/pkarr/` were in this list as **unimplemented**, and
-  *how that got missed* is worth keeping, because it is a failure of the method the rest of
-  this document argues for. `mux_interop` compares route **tables** and both
-  sides list the route. `server_interop`'s list of unwired routes had been
-  emptied, and an empty array makes its loop run zero times, so it asserted
-  nothing. The difftest scenario never requested the path. Three layers of
-  comparison, and the gap sat in the seam between them — found by deploying the
-  relay and watching a client get 501.
-
-  The seam is closed rather than patched: `did_bind_interop` stands up a stub
-  anchor and runs **both** implementations against it, which is a comparison
-  that did not exist before — every interop suite until then ran an anchorless
-  oracle, so the anchored surface had never been compared at all. It also runs
-  an anchorless pair, because the order of the checks is only observable there.
-
-
+- **A DHT node, or any did:dht support.** `/pkarr/` forwarded a client's
+  `did:dht` record to the anchor's node; every relay used to run its own node,
+  with its own UDP socket, routing table and republish loop. Both are gone with
+  the method (SPEC.md §11.27). `routes::tests` fails if the route comes back —
+  an open route that proxies a client's bytes to another host is not something
+  to reintroduce by accident.
 - **The anchor itself.** An external service; this relay is a client.
 - **Layer 2 encryption.** biset's client encrypts before submitting; the relay
   wraps and forwards.

@@ -8,7 +8,7 @@
 //! have to be upgraded in lockstep with every DID method.
 //!
 //! The one exception is `did:dht`, which is self-certifying and verified
-//! locally (see [`crate::diddht`]). Everything else needs the anchor.
+//! locally (see [`crate::devicebind`]). Everything else needs the anchor.
 //!
 //! # Every call is best-effort in one direction and fatal in the other
 //!

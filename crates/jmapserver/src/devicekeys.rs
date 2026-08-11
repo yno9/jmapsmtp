@@ -28,7 +28,7 @@ use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::diddht;
+use crate::devicebind;
 
 /// One device's authorised signing key.
 ///
@@ -146,17 +146,17 @@ pub fn verify_device_session(
     sig_b64: &str,
     now_unix: i64,
 ) -> bool {
-    if !diddht::is_fresh(ts, now_unix) {
+    if !devicebind::is_fresh(ts, now_unix) {
         return false;
     }
     if !has_device_key(dir, device_pub_key_b64url) {
         return false;
     }
-    let Some(key) = diddht::decode_device_key(device_pub_key_b64url) else {
+    let Some(key) = devicebind::decode_device_key(device_pub_key_b64url) else {
         return false;
     };
-    let statement = diddht::session_login_statement(did, device_pub_key_b64url, ts);
-    diddht::verify_signature(&key, statement.as_bytes(), sig_b64)
+    let statement = devicebind::session_login_statement(did, device_pub_key_b64url, ts);
+    devicebind::verify_signature(&key, statement.as_bytes(), sig_b64)
 }
 
 /// Mint a bearer token for a device that has just proved itself.

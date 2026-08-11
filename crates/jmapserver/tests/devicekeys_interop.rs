@@ -13,8 +13,8 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
 use jmapserver::DeviceKey;
+use jmapserver::devicebind;
 use jmapserver::devicekeys;
-use jmapserver::diddht;
 use pretty_assertions::assert_eq;
 use serde::{Deserialize, Serialize};
 
@@ -296,7 +296,7 @@ fn session_logins_are_judged_identically() {
     let Some(bin) = require_helper() else { return };
     let dir = tempfile::tempdir().unwrap();
     let (signing, id) = device_keypair();
-    let did = "did:dht:abc";
+    let did = "did:webvh:QmSCID1111111111111111111111111111:a.test:dids:alice";
     let ts = now();
 
     devicekeys::write_device_key(
@@ -309,9 +309,12 @@ fn session_logins_are_judged_identically() {
     )
     .unwrap();
 
-    let good = sign(&signing, &diddht::session_login_statement(did, &id, ts));
+    let good = sign(&signing, &devicebind::session_login_statement(did, &id, ts));
     // Signed over a different timestamp than the one presented.
-    let wrong = sign(&signing, &diddht::session_login_statement(did, &id, ts - 1));
+    let wrong = sign(
+        &signing,
+        &devicebind::session_login_statement(did, &id, ts - 1),
+    );
 
     for (name, sig, ts, expected) in [
         ("a valid login", good.clone(), ts, true),
@@ -344,9 +347,9 @@ fn an_unauthorised_device_cannot_log_in() {
     let Some(bin) = require_helper() else { return };
     let dir = tempfile::tempdir().unwrap();
     let (signing, id) = device_keypair();
-    let did = "did:dht:abc";
+    let did = "did:webvh:QmSCID1111111111111111111111111111:a.test:dids:alice";
     let ts = now();
-    let sig = sign(&signing, &diddht::session_login_statement(did, &id, ts));
+    let sig = sign(&signing, &devicebind::session_login_statement(did, &id, ts));
 
     // Nothing was ever written for this device.
     let results = go(
@@ -372,93 +375,10 @@ fn an_unauthorised_device_cannot_log_in() {
     ));
 }
 
-/// The anchor-free did:dht vouch path, which is what lets a relay with no
-/// identity anchor still authorise a device.
-#[test]
-fn did_dht_vouches_are_judged_identically() {
-    let Some(bin) = require_helper() else { return };
-    let dir = tempfile::tempdir().unwrap();
-
-    // A did:dht identifier IS its key, so the identity signs for itself.
-    let identity = ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]);
-    let did = format!(
-        "did:dht:{}",
-        diddht::zbase32_encode(&identity.verifying_key().to_bytes())
-    );
-    let (_, device_id) = device_keypair();
-    let ts = now();
-    let label = "Laptop";
-
-    // Each row signs over the DID it is testing, not over a shared statement.
-    // A single signature reused across rows would make every refusal pass for
-    // the wrong reason — the signature simply would not match — and the test
-    // would stay green even if did:webvh started resolving locally. Verified
-    // by mutation: `did_dht_root_key` accepting `did:webvh:` fails these rows
-    // now, and did not before.
-    for (name, did_used, expected) in [
-        ("the identity's own signature", did.clone(), true),
-        ("a malformed did:dht", "did:dht:yyyy".into(), false),
-        // A well-formed did:dht that is somebody else's key, with a signature
-        // this identity really made. The statement matches; the key does not.
-        (
-            "another identity's did:dht",
-            format!(
-                "did:dht:{}",
-                diddht::zbase32_encode(
-                    &ed25519_dalek::SigningKey::from_bytes(&[11u8; 32])
-                        .verifying_key()
-                        .to_bytes()
-                )
-            ),
-            false,
-        ),
-        (
-            "not a did:dht at all",
-            "did:webvh:example.com".into(),
-            false,
-        ),
-        // biset's canonical webvh shape. The SCID is
-        // base58btc(multihash(JCS(genesis log entry))) — it certifies the DID
-        // document log, not a signing key — so there is nothing here to verify
-        // against and the anchor is the only path.
-        (
-            "a realistic did:webvh",
-            "did:webvh:QmSCIDPlaceholder1111111111111111111111111111:biset.md:dids:alice".into(),
-            false,
-        ),
-        // The adversarial one: webvh-shaped, but with a genuine z-base-32
-        // encoding of a key in the SCID slot. Both implementations have to
-        // refuse on the method prefix, not on the SCID's length happening not
-        // to decode to 32 bytes.
-        (
-            "a did:webvh carrying a real key in its SCID slot",
-            format!(
-                "did:webvh:{}:biset.md:dids:alice",
-                diddht::zbase32_encode(&identity.verifying_key().to_bytes())
-            ),
-            false,
-        ),
-    ] {
-        let sig = sign(
-            &identity,
-            &diddht::vouch_statement(&did_used, &device_id, label, ts),
-        );
-        let results = go(
-            &bin,
-            dir.path(),
-            &[Op {
-                op: "vouch_local",
-                id: device_id.clone(),
-                label: label.into(),
-                did: did_used.clone(),
-                ts,
-                sig: sig.clone(),
-                ..Default::default()
-            }],
-        );
-        let rust =
-            diddht::verify_did_dht_vouch_local(&did_used, &device_id, label, ts, &sig, now());
-        assert_eq!(results[0].ok, expected, "{name}: Go disagreed");
-        assert_eq!(rust, expected, "{name}: Rust disagreed");
-    }
-}
+// The did:dht comparison that used to sit here is gone with the method.
+//
+// It drove Go's `VerifyDidDhtVouchLocal` and this port's twin over the same
+// rows, because a did:dht identifier *was* the identity's ed25519 key and
+// both sides could verify a vouch from the string alone. The Go
+// implementation still can; this port has no such path, and every vouch goes
+// to the anchor. SPEC.md §11.27.

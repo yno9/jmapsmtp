@@ -105,15 +105,6 @@ const ANCHOR: &[RouteSpec] = &[
     r("/admin/drain-anchor", Guard::Bearer),
 ];
 
-/// The Pkarr/did:dht gateway, which needs an anchor to forward *to* —
-/// `RegisterPkarrProxy` returns without registering when `anchor_url` is
-/// empty. Unlike the two above, this one is genuinely absent on an anchorless
-/// relay rather than present-and-refusing.
-///
-/// The relay no longer runs a DHT node itself; the route stays because clients
-/// derive their gateway URL from their own relay and publish only there.
-const PKARR: &[RouteSpec] = &[r("/pkarr/", Guard::Open)];
-
 /// Mounted only when `domain_verify_secret` is set. With no secret there is
 /// nothing to key an ownership token with, so the flow does not exist.
 const CUSTOM_DOMAIN: &[RouteSpec] = &[
@@ -144,9 +135,6 @@ pub fn route_specs(cfg: &Config, supports_blobs: bool) -> Vec<RouteSpec> {
     }
     if cfg!(feature = "anchor") {
         specs.extend_from_slice(ANCHOR);
-        if !cfg.anchor_url.is_empty() {
-            specs.extend_from_slice(PKARR);
-        }
     }
     if !cfg.domain_verify_secret.is_empty() {
         specs.extend_from_slice(CUSTOM_DOMAIN);

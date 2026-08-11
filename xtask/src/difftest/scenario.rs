@@ -188,14 +188,14 @@ pub fn steps() -> Vec<Step> {
             "POST",
             "/account/provision",
             Auth::None,
-            json!({"username": "bob", "did": "did:dht:abc", "device_pub_key": "x", "device_vouch_sig": "y"}),
+            json!({"username": "bob", "did": "did:webvh:QmSCID1111111111111111111111111111:example.com:dids:alice", "device_pub_key": "x", "device_vouch_sig": "y"}),
         ),
         req(
             "provision-invalid-username",
             "POST",
             "/account/provision",
             Auth::None,
-            json!({"username": "Not Valid!", "did": "did:dht:abc"}),
+            json!({"username": "Not Valid!", "did": "did:webvh:QmSCID1111111111111111111111111111:example.com:dids:alice"}),
         ),
         req(
             "session-login-unknown-device",
@@ -203,7 +203,7 @@ pub fn steps() -> Vec<Step> {
             "/account/session",
             Auth::None,
             json!({
-                "username": "alice", "domain": "example.com", "did": "did:dht:abc",
+                "username": "alice", "domain": "example.com", "did": "did:webvh:QmSCID1111111111111111111111111111:example.com:dids:alice",
                 "device_pub_key": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
                 "ts": 1, "sig": "AAAA"
             }),

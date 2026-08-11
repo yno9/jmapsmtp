@@ -11,7 +11,8 @@
 
 use base64::Engine as _;
 use ed25519_dalek::{Signer as _, SigningKey};
-use jmapserver::diddht;
+use jmapserver::devicebind;
+use jmapserver::zbase32;
 use jmapsmtp::devices::{DeviceError, SessionRequest, VouchRequest, check_vouch};
 
 mod oracle_harness;
@@ -51,7 +52,7 @@ fn setup(seed: u8) -> Setup {
     let root = SigningKey::from_bytes(&[seed; 32]);
     let did = format!(
         "did:dht:{}",
-        diddht::zbase32_encode(&root.verifying_key().to_bytes())
+        zbase32::encode(&root.verifying_key().to_bytes())
     );
     let device = SigningKey::from_bytes(&[seed.wrapping_add(1); 32]);
     let device_id = b64url(&device.verifying_key().to_bytes());
@@ -74,7 +75,7 @@ impl Setup {
             bind_ts: ts,
             sig: b64(&self
                 .root
-                .sign(diddht::vouch_statement(&self.did, &self.device_id, label, ts).as_bytes())
+                .sign(devicebind::vouch_statement(&self.did, &self.device_id, label, ts).as_bytes())
                 .to_bytes()),
         }
     }
@@ -88,7 +89,9 @@ impl Setup {
             ts,
             sig: b64(&self
                 .device
-                .sign(diddht::session_login_statement(&self.did, &self.device_id, ts).as_bytes())
+                .sign(
+                    devicebind::session_login_statement(&self.did, &self.device_id, ts).as_bytes(),
+                )
                 .to_bytes()),
         }
     }
@@ -132,8 +135,11 @@ fn oracle() -> Option<Oracle> {
 /// A genuine did:dht vouch is accepted with no anchor and no credential, and
 /// the device it registers can then log in. That whole sequence is the cold
 /// recovery path.
+/// The oracle accepts it; this port refuses, because the anchor it would have
+/// to ask is not configured. Asserted as a difference rather than dropped —
+/// SPEC.md §11.27.
 #[test]
-fn a_did_dht_vouch_is_accepted_and_the_device_can_then_log_in() {
+fn the_oracle_accepts_a_did_dht_vouch_where_this_port_needs_an_anchor() {
     let Some(o) = oracle() else { return };
     let s = setup(9);
     let ts = now();
@@ -146,8 +152,9 @@ fn a_did_dht_vouch_is_accepted_and_the_device_can_then_log_in() {
             &s.vouch("Laptop", ts),
             ts
         ),
-        Ok(jmapsmtp::provision::VouchPath::Local),
-        "this port agrees"
+        Err(jmapsmtp::devices::DeviceError::AnchorRequired),
+        "the oracle verified it from the identifier; this port has no did:dht \
+         path and no anchor, and says so rather than accepting it unchecked"
     );
 
     // The device is on disk under its own pubkey.
@@ -203,7 +210,7 @@ fn this_port_refuses_the_vouches_the_oracle_refuses() {
             VouchRequest {
                 sig: b64(&impostor
                     .sign(
-                        diddht::vouch_statement(&s.did, &s.device_id, "Laptop", ts).as_bytes(),
+                        devicebind::vouch_statement(&s.did, &s.device_id, "Laptop", ts).as_bytes(),
                     )
                     .to_bytes()),
                 ..s.vouch("Laptop", ts)
@@ -243,18 +250,34 @@ fn this_port_refuses_the_vouches_the_oracle_refuses() {
         ),
     ];
 
+    // The oracle still judges a did:dht vouch — the identifier is the key —
+    // and answers 401 for a bad one. This port has no such path and no anchor,
+    // so it answers 503: "cannot judge", not "you are wrong". Both are
+    // refusals and neither registers a device; the *reason* is what diverges.
+    // SPEC.md §11.27.
+    let mut deferred = 0;
     for (name, req, expected) in &cases {
         let (status, body) = o.post_json("/account/devices", &vouch_body(req));
         assert_eq!(
             status, *expected,
             "{name}: the oracle said {status} {body:?}"
         );
-        assert_eq!(
-            check_vouch(&cfg, req, ts).unwrap_err().status(),
-            *expected,
-            "{name}: this port disagreed"
-        );
+        let ours = check_vouch(&cfg, req, ts).unwrap_err().status();
+        if req.did.starts_with("did:dht:") {
+            assert_eq!(
+                ours,
+                DeviceError::AnchorRequired.status(),
+                "{name}: this port must defer to the anchor, not invent a verdict"
+            );
+            deferred += 1;
+            continue;
+        }
+        assert_eq!(ours, *expected, "{name}: this port disagreed");
     }
+    assert!(
+        deferred > 0,
+        "no did:dht case ran, so the divergence this asserts was never observed"
+    );
 
     // Nothing got registered by any of them.
     assert!(
@@ -280,7 +303,23 @@ fn a_webvh_vouch_is_a_server_condition_not_a_rejection() {
         body.contains("identity anchor"),
         "the message should name the anchor: {body:?}"
     );
-    assert_eq!(DeviceError::AnchorRequired.message(), body.trim());
+    // The wording diverges: the oracle says "non-did:dht per-device credentials
+    // require one", which describes a distinction this port no longer makes —
+    // every method needs the anchor here. Asserted as different so the day one
+    // of them changes, somebody is told. SPEC.md §11.27.
+    assert!(
+        body.trim().contains("identity anchor"),
+        "both name the anchor: {body:?}"
+    );
+    assert_ne!(
+        DeviceError::AnchorRequired.message(),
+        body.trim(),
+        "if these ever match again, the divergence was lost — check which side moved"
+    );
+    assert!(
+        !DeviceError::AnchorRequired.message().contains("did:dht"),
+        "this port must not mention a method it does not implement"
+    );
 }
 
 // ── login refusals give nothing away ──────────────────────────────────────
@@ -313,7 +352,7 @@ fn every_login_refusal_is_indistinguishable_on_both_implementations() {
             SessionRequest {
                 device_pub_key: other_id.clone(),
                 sig: b64(&other
-                    .sign(diddht::session_login_statement(&s.did, &other_id, ts).as_bytes())
+                    .sign(devicebind::session_login_statement(&s.did, &other_id, ts).as_bytes())
                     .to_bytes()),
                 ..s.session(ts)
             },
@@ -322,7 +361,7 @@ fn every_login_refusal_is_indistinguishable_on_both_implementations() {
             "a signature by the wrong key",
             SessionRequest {
                 sig: b64(&other
-                    .sign(diddht::session_login_statement(&s.did, &s.device_id, ts).as_bytes())
+                    .sign(devicebind::session_login_statement(&s.did, &s.device_id, ts).as_bytes())
                     .to_bytes()),
                 ..s.session(ts)
             },

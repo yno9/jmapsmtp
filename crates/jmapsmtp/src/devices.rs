@@ -101,8 +101,8 @@ impl DeviceError {
             DeviceError::SessionRejected => "session login rejected",
             DeviceError::VouchRejected => "device vouch rejected",
             DeviceError::AnchorRequired => {
-                "this relay has no identity anchor configured — non-did:dht \
-                 per-device credentials require one"
+                "this relay has no identity anchor configured — per-device \
+                 credentials require one"
             }
             DeviceError::AnchorUnavailable => "identity anchor unavailable",
             DeviceError::IdRequired => "id required",
@@ -226,31 +226,18 @@ pub fn account_exists(data_dir: &std::path::Path, domain: &str, localpart: &str)
 
 /// How a vouch for this DID can be checked, and what to answer when it cannot.
 ///
-/// Deliberately the same asymmetry as provisioning: `did:dht` verifies locally
-/// because the identifier is the key, anything else needs the anchor. The
-/// difference here is the *status* for "no anchor": 503, not 401. The vouch may
-/// be perfectly valid — this relay simply cannot judge it, which is a condition
-/// of the server, not of the request.
+/// Every DID needs the anchor now: `did:dht` was the one method whose
+/// identifier carried the key, and it is gone. What survives is the *status*
+/// for "no anchor": 503, not 401. The vouch may be perfectly valid — this
+/// relay simply cannot judge it, which is a condition of the server, not of
+/// the request.
 pub fn check_vouch(
     cfg: &Config,
     req: &VouchRequest,
     now_unix: i64,
 ) -> Result<crate::provision::VouchPath, DeviceError> {
+    let _ = now_unix;
     match crate::provision::vouch_path(cfg, &req.did) {
-        crate::provision::VouchPath::Local => {
-            if jmapserver::diddht::verify_did_dht_vouch_local(
-                &req.did,
-                &req.device_pub_key,
-                &req.label,
-                req.bind_ts,
-                &req.sig,
-                now_unix,
-            ) {
-                Ok(crate::provision::VouchPath::Local)
-            } else {
-                Err(DeviceError::VouchRejected)
-            }
-        }
         crate::provision::VouchPath::Anchor => Ok(crate::provision::VouchPath::Anchor),
         crate::provision::VouchPath::Impossible => Err(DeviceError::AnchorRequired),
     }

@@ -41,8 +41,6 @@ pub mod outbound;
 pub mod pgp;
 /// The Pkarr gateway's routing decision. Anchor build only: without one
 /// there is no DHT node to forward to.
-#[cfg(feature = "anchor")]
-pub mod pkarr;
 pub mod provision;
 pub mod queue;
 pub mod routes;

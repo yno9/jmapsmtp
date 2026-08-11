@@ -12,8 +12,8 @@ pub mod admin;
 pub mod anchor;
 pub mod authtoken;
 pub mod contacts;
+pub mod devicebind;
 pub mod devicekeys;
-pub mod diddht;
 pub mod dispatch;
 pub mod methods;
 pub mod mime;
@@ -22,6 +22,7 @@ pub mod refs;
 pub mod server;
 pub mod storage;
 pub mod store;
+pub mod zbase32;
 
 pub use authtoken::{decode_auth_token, hash_auth_token, verify_auth_token};
 pub use devicekeys::DeviceKey;

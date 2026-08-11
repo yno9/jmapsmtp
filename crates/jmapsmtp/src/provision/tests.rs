@@ -24,7 +24,6 @@ fn anchored() -> Config {
             "anchor_url":"https://anchor.test","anchor_token":"t"}"#)
 }
 
-const DID_DHT: &str = "did:dht:ybndrfg8ejkmcpqxot1uwisza345h769ybndrfg8ejkmcpqxot1uw";
 const DID_WEBVH: &str =
     "did:webvh:QmSCIDPlaceholder1111111111111111111111111111:biset.md:dids:alice";
 
@@ -81,7 +80,7 @@ fn usernames_are_narrow_and_checked_not_sanitised() {
 fn an_uppercase_username_is_folded_not_refused() {
     assert!(!valid_username("Alice"), "the predicate refuses it");
 
-    let mut req = request(DID_DHT);
+    let mut req = request(DID_WEBVH);
     req.username = "  Alice  ".into();
     assert_eq!(
         validate(&anchorless(), &req),
@@ -100,7 +99,7 @@ fn a_username_at_exactly_the_limit_is_allowed_and_one_over_is_not() {
 
 #[test]
 fn a_request_with_no_did_is_refused() {
-    let mut req = request(DID_DHT);
+    let mut req = request(DID_WEBVH);
     req.did = String::new();
     assert_eq!(validate(&anchorless(), &req), Err(Refusal::DidRequired));
 }
@@ -111,12 +110,12 @@ fn a_request_with_no_did_is_refused() {
 fn a_request_with_no_device_credential_is_refused() {
     for (field, req) in [
         ("device_pub_key", {
-            let mut r = request(DID_DHT);
+            let mut r = request(DID_WEBVH);
             r.device_pub_key = String::new();
             r
         }),
         ("device_vouch_sig", {
-            let mut r = request(DID_DHT);
+            let mut r = request(DID_WEBVH);
             r.device_vouch_sig = String::new();
             r
         }),
@@ -134,7 +133,7 @@ fn a_request_with_no_device_credential_is_refused() {
 /// relay can serve perfectly well.
 #[test]
 fn the_did_signature_is_required_only_where_it_can_be_checked() {
-    let mut req = request(DID_DHT);
+    let mut req = request(DID_WEBVH);
     req.did_sig = String::new();
 
     assert_eq!(
@@ -158,14 +157,16 @@ fn the_username_is_reported_before_the_did() {
 
 // ── did:dht vs did:webvh ──────────────────────────────────────────────────
 
-/// The heart of it. A did:dht identifier carries its own key, so an anchorless
-/// relay verifies the vouch itself. A did:webvh SCID is a hash of the genesis
-/// log entry — there is no key here — so without an anchor nothing can check
-/// it, and the relay says exactly that instead of guessing.
+/// An anchorless relay can check nobody's vouch.
+///
+/// This used to read "serves did:dht and refuses did:webvh": a did:dht
+/// identifier carried its own key, so the relay verified the vouch itself with
+/// no network. did:dht is gone, and a did:webvh SCID is a hash of the genesis
+/// log entry — there is no key in it — so without an anchor nothing can be
+/// checked and the relay says exactly that instead of guessing.
 #[test]
-fn an_anchorless_relay_serves_did_dht_and_refuses_did_webvh() {
+fn an_anchorless_relay_can_check_nothing() {
     let cfg = anchorless();
-    assert_eq!(vouch_path(&cfg, DID_DHT), VouchPath::Local);
     assert_eq!(vouch_path(&cfg, DID_WEBVH), VouchPath::Impossible);
 
     // The refusal a client can act on: the vouch was fine, the relay cannot
@@ -175,14 +176,6 @@ fn an_anchorless_relay_serves_did_dht_and_refuses_did_webvh() {
         Refusal::DidMethodNeedsAnchor.message(),
         Refusal::DeviceVouchRejected.message()
     );
-}
-
-/// Checked before the anchor: a did:dht vouch is verified locally even on an
-/// anchored relay, because the identifier already carries the key and a round
-/// trip would add nothing.
-#[test]
-fn a_did_dht_vouch_stays_local_even_with_an_anchor_configured() {
-    assert_eq!(vouch_path(&anchored(), DID_DHT), VouchPath::Local);
 }
 
 #[test]
@@ -203,7 +196,7 @@ fn binding_needs_both_the_build_and_the_configuration() {
 
 #[test]
 fn did_bound_is_reported_only_when_a_did_was_sent() {
-    let mut req = request(DID_DHT);
+    let mut req = request(DID_WEBVH);
     assert_eq!(did_bound(&anchored(), &req), cfg!(feature = "anchor"));
     assert!(!did_bound(&anchorless(), &req), "no anchor, no binding");
 

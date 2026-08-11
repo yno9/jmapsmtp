@@ -30,7 +30,7 @@
 //! probing with one would test the anchor's resolver rather than the binding
 //! path.
 //!
-//! The z-base-32 comes from `jmapserver::diddht`, this port's own encoder. If
+//! The z-base-32 comes from `jmapserver::zbase32`, this port's own encoder. If
 //! it disagreed with biset's by one character the anchor would read a
 //! different public key and reject the signature — so a success here is also
 //! a check on that encoding against a third implementation.
@@ -61,7 +61,7 @@ pub fn run(opts: Options) -> Result<()> {
     let signing = SigningKey::from_bytes(&seed);
     let did = format!(
         "did:dht:{}",
-        jmapserver::diddht::zbase32_encode(signing.verifying_key().as_bytes())
+        jmapserver::zbase32::encode(signing.verifying_key().as_bytes())
     );
 
     let (username, _domain) = opts

@@ -676,7 +676,6 @@ async fn dispatch(
         #[cfg(feature = "anchor")]
         "/account/did" => handlers::account_did(&state, &req, &body),
         #[cfg(feature = "anchor")]
-        "/pkarr/" => handlers::pkarr(&state, &req, &body),
         #[cfg(feature = "anchor")]
         "/admin/drain-anchor" => handlers::drain_anchor(&state, &req),
         "/account/delete" => handlers::account_delete(&state, &req),
@@ -1386,54 +1385,6 @@ mod handlers {
         }
     }
 
-    /// `/pkarr/` — forward a DHT record to the anchor's node.
-    ///
-    /// Unauthenticated on purpose: a client publishes its own signed record
-    /// and the signature is what protects it. The relay's own token is added
-    /// on the way out, because the anchor's gateway is for its relays and not
-    /// for the world.
-    #[cfg(feature = "anchor")]
-    pub fn pkarr(state: &RelayState, req: &Request<()>, body: &[u8]) -> Response<Body> {
-        use crate::pkarr::Action;
-        let mut res = (|| {
-            let anchor = crate::anchor::anchor_ref(&state.cfg);
-            let key = match crate::pkarr::decide(req.method().as_str(), req.uri().path()) {
-                Action::Preflight => return no_content(),
-                // Go's `http.NotFound`, which is the same body the mux writes
-                // for a route nobody registered — so a probe cannot tell the
-                // gateway apart from an unmounted path.
-                Action::NotFound => return text_error(404, "404 page not found"),
-                Action::MethodNotAllowed => return method_not_allowed(),
-                Action::Forward { key } => key.to_string(),
-            };
-
-            let url = crate::pkarr::target(&anchor.url, &key);
-            // A GET carries no body. Go passes `r.Body` through regardless,
-            // which for a GET is empty; sending `Some(&[])` instead would put
-            // a zero-length body on the wire and change the request.
-            let outgoing = if body.is_empty() { None } else { Some(body) };
-            let Some(relayed) =
-                state
-                    .anchor
-                    .forward(req.method().as_str(), &url, &anchor.token, outgoing)
-            else {
-                return text_error(502, "pkarr gateway unreachable");
-            };
-
-            let mut res = Response::new(Body::from(relayed.body));
-            *res.status_mut() =
-                StatusCode::from_u16(relayed.status).unwrap_or(StatusCode::BAD_GATEWAY);
-            if let Some(ct) = relayed.content_type
-                && let Ok(v) = HeaderValue::from_str(&ct)
-            {
-                res.headers_mut().insert(header::CONTENT_TYPE, v);
-            }
-            res
-        })();
-        set_route_cors(&mut res, "GET, PUT, OPTIONS", "Content-Type");
-        res
-    }
-
     /// `PUT /account/did` — bind a DID to the **authenticated** account.
     ///
     /// The account is taken from the credential and never from the body; see
@@ -1608,38 +1559,6 @@ mod handlers {
                 #[cfg(not(feature = "anchor"))]
                 crate::provision::VouchPath::Anchor => {
                     return refuse(crate::provision::Refusal::AnchorUnavailable);
-                }
-                crate::provision::VouchPath::Local => {
-                    let vouch = crate::devices::VouchRequest {
-                        username: username.clone(),
-                        domain: domain.clone(),
-                        did: request.did.clone(),
-                        device_pub_key: request.device_pub_key.clone(),
-                        label: request.device_label.clone(),
-                        bind_ts: request.device_vouch_ts,
-                        sig: request.device_vouch_sig.clone(),
-                    };
-                    if !jmapserver::diddht::verify_did_dht_vouch_local(
-                        &vouch.did,
-                        &vouch.device_pub_key,
-                        &vouch.label,
-                        vouch.bind_ts,
-                        &vouch.sig,
-                        now_unix(),
-                    ) {
-                        return refuse(crate::provision::Refusal::DeviceVouchRejected);
-                    }
-                    if crate::devices::write_device(
-                        &state.data_dir,
-                        &domain,
-                        &username,
-                        &vouch,
-                        now_unix(),
-                    )
-                    .is_err()
-                    {
-                        return text_error(500, "internal error");
-                    }
                 }
             }
 

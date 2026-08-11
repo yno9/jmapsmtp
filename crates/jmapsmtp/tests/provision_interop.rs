@@ -13,7 +13,8 @@
 //! (SPEC.md §10-A). An anchored oracle would try to reach a real anchor.
 
 use ed25519_dalek::{Signer as _, SigningKey};
-use jmapserver::diddht;
+use jmapserver::devicebind;
+use jmapserver::zbase32;
 use jmapsmtp::config::{Config, DynamicDomains};
 use jmapsmtp::provision::{
     ProvisionRequest, Refusal, VouchPath, may_provision, resolve_domain, validate, vouch_path,
@@ -70,13 +71,13 @@ fn did_dht_identity(seed: u8, label: &str) -> Identity {
     let root = SigningKey::from_bytes(&[seed; 32]);
     let did = format!(
         "did:dht:{}",
-        diddht::zbase32_encode(&root.verifying_key().to_bytes())
+        zbase32::encode(&root.verifying_key().to_bytes())
     );
     let device = SigningKey::from_bytes(&[seed.wrapping_add(1); 32]);
     let device_pub_key = b64url(&device.verifying_key().to_bytes());
     let ts = now();
     let vouch_sig = b64(&root
-        .sign(diddht::vouch_statement(&did, &device_pub_key, label, ts).as_bytes())
+        .sign(devicebind::vouch_statement(&did, &device_pub_key, label, ts).as_bytes())
         .to_bytes());
     Identity {
         did,
@@ -139,10 +140,11 @@ fn our_status(cfg: &Config, req: &ProvisionRequest) -> u16 {
         return r.status();
     }
     match vouch_path(cfg, &req.did) {
+        // Every DID needs the anchor now, and this relay has none. The oracle
+        // still verifies a did:dht vouch locally and creates the account, so
+        // this is where the two part company — SPEC.md §11.27, asserted below
+        // rather than smoothed over.
         VouchPath::Impossible => Refusal::DidMethodNeedsAnchor.status(),
-        // A real vouch, verified locally, so this is a success. The signature
-        // itself is checked by devicekeys_interop.
-        VouchPath::Local => 201,
         VouchPath::Anchor => unreachable!("this oracle is anchorless"),
     }
 }
@@ -231,16 +233,33 @@ fn this_port_refuses_exactly_what_the_oracle_refuses() {
     r.did = DID_WEBVH.into();
     cases.push(("a did:webvh on an anchorless relay", r));
 
+    // Cases the oracle creates and this port refuses, so the declared
+    // divergence is not mistaken for a passing comparison.
+    let mut diverged = 0;
     for (name, req) in &cases {
         let (status, go_body) = o.post_json("/account/provision", &body(req));
-        assert_eq!(
-            our_status(&cfg, req),
-            status,
-            "{name}: the oracle said {status} {go_body:?}"
-        );
+        let ours = our_status(&cfg, req);
+        if status == 201 && req.did.starts_with("did:dht:") {
+            assert_eq!(
+                ours,
+                Refusal::DidMethodNeedsAnchor.status(),
+                "{name}: the oracle created it; this port must refuse for the \
+                 stated reason, not some other one"
+            );
+            diverged += 1;
+            continue;
+        }
+        assert_eq!(ours, status, "{name}: the oracle said {status} {go_body:?}");
     }
+    assert!(
+        diverged > 0,
+        "no did:dht case succeeded on the oracle, so §11.27 was never observed \
+         — the comparison passed without comparing the thing it is about"
+    );
 
-    // The folded name is the one that got created, not the submitted spelling.
+    // The folded name is the one the **oracle** created, not the submitted
+    // spelling. This port refuses these outright now, so the folding it is
+    // checked on is `validate`'s, in provision::tests.
     assert!(
         o.data_dir().join("open.test/nora").is_dir(),
         "the account should be at the folded name"
