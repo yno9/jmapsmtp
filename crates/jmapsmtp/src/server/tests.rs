@@ -448,7 +448,7 @@ fn anchored_state(replies: Vec<(u16, &str)>) -> (Arc<RelayState>, Arc<ScriptedAn
 fn webvh_provision() -> String {
     serde_json::json!({
         "username": "carol", "domain": "open.test",
-        "did": "did:webvh:QmSCID111111111111111111111111111111111111111:biset.md:dids:carol",
+        "did": "did:webvh:QmSCID111111111111111111111111111111111111111:biset.md:carol",
         "did_sig": "c2ln", "bind_ts": 1_785_000_000i64,
         "device_pub_key": "DEVKEY", "device_label": "Laptop",
         "device_vouch_ts": 1_785_000_000i64, "device_vouch_sig": "c2ln",
@@ -485,12 +485,12 @@ async fn an_anchored_provision_claims_then_vouches_then_writes_the_device() {
     let seen = anchor.seen.lock().clone();
     assert_eq!(seen.len(), 2, "one claim, one vouch");
     assert!(
-        seen[0].starts_with("https://anchor.test/identity/carol"),
+        seen[0].starts_with("https://anchor.test/_anchor/identity/carol"),
         "{}",
         seen[0]
     );
     assert!(
-        seen[1].starts_with("https://anchor.test/devices/vouch"),
+        seen[1].starts_with("https://anchor.test/_anchor/devices/vouch"),
         "{}",
         seen[1]
     );

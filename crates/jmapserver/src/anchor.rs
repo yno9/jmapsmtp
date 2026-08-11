@@ -167,7 +167,7 @@ pub fn claim(
         return Verdict::Error;
     };
 
-    let url = anchor.endpoint(&format!("/identity/{localpart}"));
+    let url = anchor.endpoint(&format!("/_anchor/identity/{localpart}"));
     let Some((status, reason)) = transport.send("POST", &url, &anchor.token, Some(&body)) else {
         return Verdict::Error;
     };
@@ -229,7 +229,7 @@ pub fn vouch_device(
         return Verdict::Error;
     };
 
-    let url = anchor.endpoint("/devices/vouch");
+    let url = anchor.endpoint("/_anchor/devices/vouch");
     let Some((status, reason)) = transport.send("POST", &url, &anchor.token, Some(&body)) else {
         return Verdict::Error;
     };
@@ -269,7 +269,7 @@ pub fn release_ok(transport: &dyn Transport, anchor: &Ref, localpart: &str, doma
         return false;
     }
     let url = anchor.endpoint(&format!(
-        "/identity/{localpart}?domain={}",
+        "/_anchor/identity/{localpart}?domain={}",
         query_escape(domain)
     ));
     let Some((status, _)) = transport.send("DELETE", &url, &anchor.token, None) else {

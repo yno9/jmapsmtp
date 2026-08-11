@@ -99,7 +99,7 @@ fn the_url_is_joined_without_doubling_the_slash() {
         };
         let fake = Fake::answering(200, "");
         claim(&fake, &anchor, "alice", "a.test", "did:dht:x", &proof());
-        assert_eq!(fake.last().1, "https://anchor.test/identity/alice", "{url}");
+        assert_eq!(fake.last().1, "https://anchor.test/_anchor/identity/alice", "{url}");
     }
 }
 
@@ -124,7 +124,7 @@ fn a_release_names_the_domain_as_an_escaped_query_value() {
     release_ok(&fake, &anchor(), "alice", "a b.test");
     let (method, url, _, body) = fake.last();
     assert_eq!(method, "DELETE");
-    assert_eq!(url, "https://anchor.test/identity/alice?domain=a+b.test");
+    assert_eq!(url, "https://anchor.test/_anchor/identity/alice?domain=a+b.test");
     assert_eq!(body, None, "a DELETE carries no body");
 }
 
@@ -238,7 +238,7 @@ fn a_device_vouch_carries_the_account_it_is_for() {
         Verdict::Ok
     );
     let (_, url, _, body) = fake.last();
-    assert_eq!(url, "https://anchor.test/devices/vouch");
+    assert_eq!(url, "https://anchor.test/_anchor/devices/vouch");
 
     let body: serde_json::Value = serde_json::from_str(&body.unwrap()).unwrap();
     // Without these the anchor cannot cross-check the claim registry, and a
@@ -425,8 +425,8 @@ fn the_domain_is_part_of_the_release() {
     assert_eq!(
         seen,
         vec![
-            "https://anchor.test/identity/alice?domain=a.test".to_string(),
-            "https://anchor.test/identity/alice?domain=b.test".to_string(),
+            "https://anchor.test/_anchor/identity/alice?domain=a.test".to_string(),
+            "https://anchor.test/_anchor/identity/alice?domain=b.test".to_string(),
         ],
         "the same localpart on two domains must be two different releases"
     );
