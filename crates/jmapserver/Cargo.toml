@@ -1,0 +1,57 @@
+[package]
+name = "jmapserver"
+description = "JMAP server library: store, dispatch, HTTP surface, device credentials. Port of github.com/yno9/go-jmapserver."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+# Mirrors the Go build tags: default = anchor_on.go, --no-default-features =
+# `go build -tags noanchor`. The anchor client is the ONLY thing gated; plain
+# JMAP is identical either way. See PLAN.md §3.
+default = ["anchor"]
+anchor = ["dep:reqwest"]
+
+[dependencies]
+jmap-types = { path = "../jmap-types" }
+time.workspace = true
+
+tokio.workspace = true
+axum.workspace = true
+tower.workspace = true
+tower-http.workspace = true
+reqwest = { workspace = true, optional = true }
+
+serde.workspace = true
+serde_json.workspace = true
+
+ed25519-dalek.workspace = true
+sha2.workspace = true
+base64.workspace = true
+rand.workspace = true
+subtle.workspace = true
+
+mail-parser.workspace = true
+mail-builder.workspace = true
+htmd.workspace = true
+web-push.workspace = true
+
+tracing.workspace = true
+prometheus.workspace = true
+parking_lot.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+walkdir.workspace = true
+
+[dev-dependencies]
+pretty_assertions.workspace = true
+sha1.workspace = true
+base64.workspace = true
+serde.workspace = true
+tempfile.workspace = true
+proptest.workspace = true
+
+[lints]
+workspace = true

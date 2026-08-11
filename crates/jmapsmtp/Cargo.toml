@@ -1,0 +1,88 @@
+[package]
+name = "jmapsmtp"
+description = "SMTP <-> JMAP bridge. Port of github.com/yno9/go-jmapsmtp."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# A library alongside the binary so the integration tests can reach the
+# modules the binary is assembled from.
+[lib]
+name = "jmapsmtp"
+path = "src/lib.rs"
+
+[[bin]]
+name = "jmapsmtp"
+path = "src/main.rs"
+
+[features]
+default = ["anchor"]
+anchor = ["jmapserver/anchor"]
+
+[dependencies]
+time.workspace = true
+subtle.workspace = true
+web-push.workspace = true
+cryptenv = { path = "../cryptenv" }
+jmap-types = { path = "../jmap-types" }
+jmapserver = { path = "../jmapserver", default-features = false }
+
+tokio.workspace = true
+async-stream.workspace = true
+axum.workspace = true
+tower.workspace = true
+tower-http.workspace = true
+# Not optional: Web Push needs an HTTP client in the anchorless build too.
+reqwest.workspace = true
+
+serde.workspace = true
+serde_json.workspace = true
+
+argon2.workspace = true
+sha2.workspace = true
+sha1.workspace = true
+hmac.workspace = true
+ed25519-dalek.workspace = true
+rsa.workspace = true
+pkcs8.workspace = true
+base64.workspace = true
+hex.workspace = true
+rand.workspace = true
+
+mail-parser.workspace = true
+mail-builder.workspace = true
+mail-auth.workspace = true
+# Only for mail-auth's key-loading type.
+rustls-pki-types = "1"
+lettre.workspace = true
+pgp.workspace = true
+# rpgp's bounds are on rand 0.8's traits, not the workspace's rand 0.9.
+pgp_rand = { package = "rand", version = "0.8" }
+
+tokio-rustls.workspace = true
+rustls-native-certs.workspace = true
+rustls.workspace = true
+rustls-pemfile.workspace = true
+rcgen.workspace = true
+hickory-resolver.workspace = true
+
+tracing.workspace = true
+tracing-subscriber.workspace = true
+prometheus.workspace = true
+parking_lot.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+regex.workspace = true
+walkdir.workspace = true
+
+[dev-dependencies]
+filetime.workspace = true
+futures-util.workspace = true
+pretty_assertions.workspace = true
+tempfile.workspace = true
+proptest.workspace = true
+
+[lints]
+workspace = true

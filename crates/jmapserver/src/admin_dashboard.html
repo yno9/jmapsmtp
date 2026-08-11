@@ -1,0 +1,403 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>biset relay admin</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f7f7f8;
+    --panel: #ffffff;
+    --border: #e2e2e6;
+    --text: #1a1a1e;
+    --text-dim: #6b6b74;
+    --accent: #6d5ce8;
+    --accent-bg: #6d5ce81a;
+    --ok: #1a8f5e;
+    --fail: #c73e3e;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #17171b;
+      --panel: #1f1f24;
+      --border: #303038;
+      --text: #ececef;
+      --text-dim: #8b8b95;
+      --accent: #a394f5;
+      --accent-bg: #a394f524;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 24px 20px 60px;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 14px;
+    line-height: 1.5;
+  }
+  .wrap { max-width: 980px; margin: 0 auto; }
+  header {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 20px;
+  }
+  h1 { font-size: 17px; font-weight: 600; margin: 0; }
+  h1 .relay-tag {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    color: var(--accent);
+    background: var(--accent-bg);
+    padding: 2px 7px;
+    border-radius: 5px;
+    margin-left: 8px;
+  }
+  .meta { color: var(--text-dim); font-size: 12px; }
+
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px;
+    margin-bottom: 16px;
+  }
+
+  .token-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .token-row input[type=password], .token-row input[type=text] {
+    flex: 1 1 240px;
+    min-width: 160px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 7px;
+    padding: 7px 10px;
+    font-family: var(--mono);
+    font-size: 13px;
+  }
+  button {
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    border-radius: 7px;
+    padding: 7px 14px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  button.secondary {
+    background: transparent;
+    color: var(--text);
+    border: 1px solid var(--border);
+  }
+  button:disabled { opacity: 0.5; cursor: default; }
+
+  .stats {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+  .stat {
+    flex: 1 1 120px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 12px 14px;
+  }
+  .stat .n { font-size: 20px; font-weight: 700; }
+  .stat .l { font-size: 11px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.03em; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th {
+    text-align: left;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    color: var(--text-dim);
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--border);
+    cursor: pointer;
+    user-select: none;
+    white-space: nowrap;
+  }
+  th:hover { color: var(--text); }
+  td { padding: 9px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  tr.acct-row { cursor: pointer; }
+  tr.acct-row:hover { background: var(--accent-bg); }
+  .addr { font-family: var(--mono); }
+  .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .dim { color: var(--text-dim); }
+
+  tr.detail-row td { background: var(--bg); padding: 0; border-bottom: 1px solid var(--border); }
+  .detail-inner { padding: 12px 16px 16px; }
+  .detail-inner h3 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.03em; color: var(--text-dim); margin: 12px 0 6px; }
+  .detail-inner h3:first-child { margin-top: 0; }
+  .usage-row { display: flex; gap: 16px; flex-wrap: wrap; font-family: var(--mono); font-size: 12px; }
+
+  .act-table td, .act-table th { padding: 5px 8px; font-size: 12px; }
+  .badge { display: inline-block; padding: 1px 6px; border-radius: 4px; font-size: 11px; font-weight: 600; }
+  .badge.in { background: #1a8f5e22; color: var(--ok); }
+  .badge.out { background: var(--accent-bg); color: var(--accent); }
+  .badge.ok { color: var(--ok); }
+  .badge.failed { color: var(--fail); }
+
+  .empty, .error, .loading { padding: 30px 10px; text-align: center; color: var(--text-dim); }
+  .error { color: var(--fail); }
+  #err-banner {
+    display: none;
+    background: #c73e3e1a;
+    color: var(--fail);
+    border: 1px solid #c73e3e44;
+    border-radius: 8px;
+    padding: 10px 14px;
+    margin-bottom: 16px;
+    font-size: 13px;
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>biset relay admin <span class="relay-tag" id="relay-tag">—</span></h1>
+    <div class="meta" id="version-meta"></div>
+  </header>
+
+  <div id="err-banner"></div>
+
+  <div class="panel">
+    <div class="token-row">
+      <input id="token" type="password" placeholder="admin token (Authorization: Bearer …)">
+      <button id="save-token">Save</button>
+      <button class="secondary" id="refresh">Refresh</button>
+      <label class="meta" style="display:flex;align-items:center;gap:5px;">
+        <input type="checkbox" id="auto-refresh"> auto-refresh (60s)
+      </label>
+    </div>
+  </div>
+
+  <div class="stats" id="stats"></div>
+
+  <div class="panel" style="padding:0;overflow:hidden;">
+    <table id="acct-table">
+      <thead>
+        <tr>
+          <th data-sort="address">Address</th>
+          <th data-sort="messages" class="num">Messages</th>
+          <th data-sort="bytes" class="num">Size</th>
+          <th data-sort="lastActivity">Last activity</th>
+        </tr>
+      </thead>
+      <tbody id="acct-body">
+        <tr><td colspan="4" class="loading">token を入力して Refresh してください</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  const TOKEN_KEY = "biset_admin_token";
+  const tokenInput = document.getElementById("token");
+  const errBanner = document.getElementById("err-banner");
+  const statsEl = document.getElementById("stats");
+  const bodyEl = document.getElementById("acct-body");
+  const relayTag = document.getElementById("relay-tag");
+  const versionMeta = document.getElementById("version-meta");
+
+  let accounts = [];
+  let sortKey = "lastActivity";
+  let sortDir = -1;
+  let openAddr = null;
+  let autoTimer = null;
+
+  tokenInput.value = localStorage.getItem(TOKEN_KEY) || "";
+
+  document.getElementById("save-token").addEventListener("click", function () {
+    localStorage.setItem(TOKEN_KEY, tokenInput.value);
+    load();
+  });
+  document.getElementById("refresh").addEventListener("click", load);
+  document.getElementById("auto-refresh").addEventListener("change", function (e) {
+    clearInterval(autoTimer);
+    if (e.target.checked) autoTimer = setInterval(load, 60000);
+  });
+  document.querySelectorAll("th[data-sort]").forEach(function (th) {
+    th.addEventListener("click", function () {
+      const key = th.dataset.sort;
+      if (sortKey === key) sortDir *= -1; else { sortKey = key; sortDir = 1; }
+      render();
+    });
+  });
+
+  function authHeaders() {
+    const t = localStorage.getItem(TOKEN_KEY);
+    return t ? { "Authorization": "Bearer " + t } : {};
+  }
+
+  function showError(msg) {
+    if (!msg) { errBanner.style.display = "none"; return; }
+    errBanner.textContent = msg;
+    errBanner.style.display = "block";
+  }
+
+  function fmtBytes(n) {
+    if (n == null) return "—";
+    const units = ["B", "KB", "MB", "GB"];
+    let i = 0, v = n;
+    while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+    return (i === 0 ? v : v.toFixed(1)) + " " + units[i];
+  }
+
+  function fmtRelative(iso) {
+    if (!iso) return "—";
+    const d = new Date(iso);
+    const diffMs = Date.now() - d.getTime();
+    const s = Math.floor(diffMs / 1000);
+    let out;
+    if (s < 60) out = "たった今";
+    else if (s < 3600) out = Math.floor(s / 60) + "分前";
+    else if (s < 86400) out = Math.floor(s / 3600) + "時間前";
+    else out = Math.floor(s / 86400) + "日前";
+    return out;
+  }
+
+  async function load() {
+    showError("");
+    bodyEl.innerHTML = '<tr><td colspan="4" class="loading">読み込み中…</td></tr>';
+    try {
+      const res = await fetch("/admin/accounts", { headers: authHeaders() });
+      if (res.status === 401) {
+        showError("認証エラー: token を確認してください");
+        bodyEl.innerHTML = '<tr><td colspan="4" class="error">unauthorized</td></tr>';
+        return;
+      }
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      const data = await res.json();
+      accounts = data.accounts || [];
+      relayTag.textContent = data.relay || "—";
+      versionMeta.textContent = data.version ? ("v" + data.version) : "";
+      render();
+    } catch (e) {
+      showError("取得失敗: " + e.message);
+      bodyEl.innerHTML = '<tr><td colspan="4" class="error">failed to load</td></tr>';
+    }
+  }
+
+  function render() {
+    renderStats();
+    const sorted = accounts.slice().sort(function (a, b) {
+      let av = a[sortKey], bv = b[sortKey];
+      if (sortKey === "lastActivity") { av = av || ""; bv = bv || ""; }
+      if (typeof av === "string") { av = av.toLowerCase(); bv = (bv || "").toLowerCase(); }
+      if (av < bv) return -1 * sortDir;
+      if (av > bv) return 1 * sortDir;
+      return 0;
+    });
+
+    if (sorted.length === 0) {
+      bodyEl.innerHTML = '<tr><td colspan="4" class="empty">アカウントなし</td></tr>';
+      return;
+    }
+
+    bodyEl.innerHTML = "";
+    sorted.forEach(function (a) {
+      const tr = document.createElement("tr");
+      tr.className = "acct-row";
+      tr.innerHTML =
+        '<td class="addr">' + escapeHtml(a.address) + '</td>' +
+        '<td class="num">' + a.messages + '</td>' +
+        '<td class="num">' + fmtBytes(a.bytes) + '</td>' +
+        '<td class="dim" title="' + (a.lastActivity || "") + '">' + fmtRelative(a.lastActivity) + '</td>';
+      tr.addEventListener("click", function () { toggleDetail(a.address, tr); });
+      bodyEl.appendChild(tr);
+      if (openAddr === a.address) {
+        const holder = document.createElement("tr");
+        holder.className = "detail-row";
+        const td = document.createElement("td");
+        td.colSpan = 4;
+        td.innerHTML = '<div class="detail-inner loading">読み込み中…</div>';
+        holder.appendChild(td);
+        bodyEl.appendChild(holder);
+        loadDetail(a.address, td);
+      }
+    });
+  }
+
+  function renderStats() {
+    const totalMsgs = accounts.reduce(function (s, a) { return s + a.messages; }, 0);
+    const totalBytes = accounts.reduce(function (s, a) { return s + (a.bytes || 0); }, 0);
+    statsEl.innerHTML =
+      stat(accounts.length, "accounts") +
+      stat(totalMsgs, "messages") +
+      stat(fmtBytes(totalBytes), "total size");
+  }
+  function stat(n, label) {
+    return '<div class="stat"><div class="n">' + n + '</div><div class="l">' + label + '</div></div>';
+  }
+
+  function toggleDetail(addr, tr) {
+    openAddr = openAddr === addr ? null : addr;
+    render();
+  }
+
+  async function loadDetail(addr, td) {
+    try {
+      const res = await fetch("/admin/accounts/" + encodeURIComponent(addr) + "?limit=50", { headers: authHeaders() });
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      const d = await res.json();
+      td.innerHTML = renderDetail(d);
+    } catch (e) {
+      td.innerHTML = '<div class="detail-inner error">failed to load: ' + escapeHtml(e.message) + '</div>';
+    }
+  }
+
+  function renderDetail(d) {
+    let html = '<div class="detail-inner">';
+    html += '<h3>Usage</h3><div class="usage-row">';
+    Object.keys(d.usage || {}).forEach(function (k) {
+      html += '<div><span class="dim">' + k + ':</span> ' + fmtBytes(d.usage[k]) + '</div>';
+    });
+    html += '</div>';
+
+    html += '<h3>Activity (' + (d.activity || []).length + ')</h3>';
+    if (!d.activity || d.activity.length === 0) {
+      html += '<div class="dim">no recorded activity</div>';
+    } else {
+      html += '<table class="act-table"><thead><tr><th>Time</th><th>Dir</th><th>Kind</th><th>Peer</th><th class="num">Bytes</th><th>Result</th></tr></thead><tbody>';
+      d.activity.forEach(function (ev) {
+        html += '<tr>' +
+          '<td class="dim" title="' + ev.t + '">' + fmtRelative(ev.t) + '</td>' +
+          '<td><span class="badge ' + ev.dir + '">' + ev.dir + '</span></td>' +
+          '<td>' + escapeHtml(ev.kind || "") + '</td>' +
+          '<td class="addr">' + escapeHtml(ev.peer || "") + '</td>' +
+          '<td class="num">' + (ev.bytes ? fmtBytes(ev.bytes) : "") + '</td>' +
+          '<td><span class="badge ' + (ev.result || "") + '">' + escapeHtml(ev.result || "") + '</span></td>' +
+          '</tr>';
+      });
+      html += '</tbody></table>';
+    }
+    html += '</div>';
+    return html;
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+
+  if (localStorage.getItem(TOKEN_KEY)) load();
+})();
+</script>
+</body>
+</html>

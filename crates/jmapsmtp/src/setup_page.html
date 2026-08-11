@@ -1,0 +1,99 @@
+<!DOCTYPE html><html><head><meta charset=utf-8>
+<title>パスワード設定</title>
+<style>body{font-family:sans-serif;max-width:400px;margin:80px auto;padding:0 16px}
+input{width:100%%;box-sizing:border-box;padding:8px;margin:8px 0;font-size:16px}
+button{padding:10px 20px;font-size:16px;cursor:pointer}
+#err{color:red;display:none}
+#done{display:none}</style></head>
+<body><h2>%s@%s のパスワード設定</h2>
+<form id=f>
+<input id=pw1 type=password placeholder="新しいパスワード" required autofocus>
+<input id=pw2 type=password placeholder="確認" required>
+<button type=submit id=submit>設定する</button>
+<p id=err></p>
+</form>
+<div id=done><h3>設定完了</h3><p>%s@%s でログインできます。</p></div>
+<script type="module">
+import { argon2id } from 'https://esm.sh/hash-wasm@4.11.0'
+
+const EMAIL = '%s@%s'
+const TOKEN = '%s'
+const KDF = { t: 3, m: 64 * 1024, p: 4 }
+
+function b64(buf) {
+  return btoa(String.fromCharCode(...new Uint8Array(buf)))
+}
+function rnd(n) { return crypto.getRandomValues(new Uint8Array(n)) }
+
+async function hkdf(secret, info, len) {
+  const key = await crypto.subtle.importKey('raw', secret, 'HKDF', false, ['deriveBits'])
+  const bits = await crypto.subtle.deriveBits(
+    { name: 'HKDF', hash: 'SHA-256', salt: new Uint8Array(0), info: new TextEncoder().encode(info) },
+    key, len * 8)
+  return new Uint8Array(bits)
+}
+
+async function buildEnvelope(password) {
+  const salt = rnd(16)
+  const masterSecret = rnd(32)
+  const wrapKeyBytes = await argon2id({
+    password,
+    salt,
+    iterations: KDF.t,
+    memorySize: KDF.m,
+    parallelism: KDF.p,
+    hashLength: 32,
+    outputType: 'binary',
+  })
+  const wrapKey = await crypto.subtle.importKey('raw', wrapKeyBytes, 'AES-GCM', false, ['encrypt'])
+  const nonce = rnd(12)
+  const ct = new Uint8Array(await crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv: nonce }, wrapKey, masterSecret))
+  const wrapped = new Uint8Array(nonce.length + ct.length)
+  wrapped.set(nonce, 0); wrapped.set(ct, nonce.length)
+
+  const authToken = await hkdf(masterSecret, 'biset-jmapsmtp/auth/v1', 32)
+  const authHash = new Uint8Array(await crypto.subtle.digest('SHA-256', authToken))
+
+  return {
+    v: 1,
+    salt: b64(salt),
+    kdf: KDF,
+    wrapped_secret: b64(wrapped),
+    auth_token_hash: b64(authHash),
+  }
+}
+
+document.getElementById('f').addEventListener('submit', async e => {
+  e.preventDefault()
+  const errEl = document.getElementById('err')
+  const submit = document.getElementById('submit')
+  const p1 = document.getElementById('pw1').value
+  const p2 = document.getElementById('pw2').value
+  if (p1 !== p2) { errEl.textContent = 'パスワードが一致しません'; errEl.style.display = 'block'; return }
+  if (p1.length < 8) { errEl.textContent = 'パスワードは 8 文字以上'; errEl.style.display = 'block'; return }
+  errEl.style.display = 'none'
+  submit.disabled = true; submit.textContent = '生成中…'
+  try {
+    const env = await buildEnvelope(p1)
+    const resp = await fetch('/auth/signup?token=' + encodeURIComponent(TOKEN), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(env),
+    })
+    if (!resp.ok) {
+      errEl.textContent = 'サーバエラー: ' + resp.status
+      errEl.style.display = 'block'
+      submit.disabled = false; submit.textContent = '設定する'
+      return
+    }
+    document.getElementById('f').style.display = 'none'
+    document.getElementById('done').style.display = 'block'
+  } catch (err) {
+    errEl.textContent = '生成失敗: ' + err.message
+    errEl.style.display = 'block'
+    submit.disabled = false; submit.textContent = '設定する'
+  }
+})
+</script>
+</body></html>

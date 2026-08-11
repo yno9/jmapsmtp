@@ -1,0 +1,28 @@
+[package]
+name = "cryptenv"
+description = "Password-derived key envelope (Argon2id + AES-GCM + HKDF). Port of go-jmapsmtp/cryptenv."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+argon2.workspace = true
+aes-gcm.workspace = true
+hkdf.workspace = true
+sha2.workspace = true
+subtle.workspace = true
+rand.workspace = true
+base64.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+pretty_assertions.workspace = true
+serde_json.workspace = true
+base64.workspace = true
+
+[lints]
+workspace = true
