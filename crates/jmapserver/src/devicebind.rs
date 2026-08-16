@@ -6,18 +6,23 @@
 //!
 //! ```text
 //! DID root key
-//!   └─ vouch:   devkey:<did>:<devicePubKey>:<label>:<ts>              signed by the root key
+//!   └─ vouch:   devkey:<did>:<devicePubKey>:<label>:<ts>                          signed by the root key
 //!        └─ device key            <acct>/devices/<pubkey>.json
-//!             └─ session: session:<did>:<devicePubKey>:<relayHost>:<ts>  signed by the device
+//!             └─ session: session:<did>:<devicePubKey>:<relayHost>:<nonce>:<ts>   signed by the device
 //! ```
 //!
-//! The session statement grew a `relayHost` segment (2026-08-16) it had been
-//! missing relative to `vouch:` above — without it, a device signature
-//! captured by one relay verified just as well replayed against a DIFFERENT
-//! relay this device is also registered with, inside the freshness window.
-//! Still not a server-issued nonce: each relay reports the host IT observed
-//! (same shape `bind:`'s check uses), which stops a cross-relay replay but not
-//! a same-relay one inside the same window — a real gap, not assumed closed.
+//! The session statement grew two segments relative to `vouch:` above
+//! (SPEC.md §11.28, 2026-08-16):
+//!
+//! - `relayHost` — without it, a device signature captured by one relay
+//!   verified just as well replayed against a DIFFERENT relay this device is
+//!   also registered with, inside the freshness window.
+//! - `nonce` — a single-use value from `GET /account/session/challenge`
+//!   (`session_nonce.rs`), consumed on first use. `relayHost` alone stops a
+//!   CROSS-relay replay but not a SAME-relay one inside the freshness
+//!   window; the nonce closes that, since a second POST of the identical
+//!   signed statement fails once the nonce is already spent, however fresh
+//!   `ts` still is.
 //!
 //! None of this is specific to a DID method. It lived in a module called
 //! `diddht` until did:dht was removed, and that misfiling is why the removal
@@ -40,9 +45,10 @@ pub fn session_login_statement(
     did: &str,
     device_pub_key_b64url: &str,
     relay_host: &str,
+    nonce: &str,
     ts: i64,
 ) -> String {
-    format!("session:{did}:{device_pub_key_b64url}:{relay_host}:{ts}")
+    format!("session:{did}:{device_pub_key_b64url}:{relay_host}:{nonce}:{ts}")
 }
 
 /// The statement an identity signs to authorise a device. Byte-identical with

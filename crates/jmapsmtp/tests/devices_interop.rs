@@ -86,18 +86,30 @@ impl Setup {
         }
     }
 
+    /// Not run through this port's own `login()` anywhere in this file (only
+    /// POSTed to the Go oracle, which does not know about nonces at all) —
+    /// a fixed placeholder is fine, unlike `Setup::session` in
+    /// `devices/tests.rs`, which DOES exercise real nonce consumption.
     fn session(&self, ts: i64) -> SessionRequest {
+        let nonce = "unused-in-oracle-interop";
         SessionRequest {
             username: "alice".into(),
             domain: "a.test".into(),
             did: self.did.clone(),
             device_pub_key: self.device_id.clone(),
+            nonce: nonce.into(),
             ts,
             sig: b64(&self
                 .device
                 .sign(
-                    devicebind::session_login_statement(&self.did, &self.device_id, RELAY_HOST, ts)
-                        .as_bytes(),
+                    devicebind::session_login_statement(
+                        &self.did,
+                        &self.device_id,
+                        RELAY_HOST,
+                        nonce,
+                        ts,
+                    )
+                    .as_bytes(),
                 )
                 .to_bytes()),
         }
@@ -116,6 +128,7 @@ impl Setup {
             domain: "a.test".into(),
             did: self.did.clone(),
             device_pub_key: self.device_id.clone(),
+            nonce: "unused-in-oracle-interop".into(),
             ts,
             sig: b64(&self
                 .device

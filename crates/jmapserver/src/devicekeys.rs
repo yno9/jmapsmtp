@@ -143,12 +143,21 @@ pub fn remove_device_key(dir: &Path, id: &str) -> io::Result<()> {
 /// `bind:`'s check uses) — not a value read back out of the request body,
 /// which the client controls and a captured-and-replayed request would carry
 /// unchanged regardless of which relay it's replayed against.
+///
+/// `nonce` is checked here only as a STRING the statement embeds — this
+/// function has no access to a nonce store, so it cannot tell a genuine,
+/// unspent nonce from a made-up one. **Consuming** the nonce (proving it was
+/// actually issued and not already spent) is the caller's job, done
+/// separately against `session_nonce::SessionNonceStore` — see
+/// `devices.rs::login`, which does both and treats either failing the same
+/// way.
 #[must_use]
 pub fn verify_device_session(
     dir: &Path,
     did: &str,
     device_pub_key_b64url: &str,
     relay_host: &str,
+    nonce: &str,
     ts: i64,
     sig_b64: &str,
     now_unix: i64,
@@ -162,7 +171,8 @@ pub fn verify_device_session(
     let Some(key) = devicebind::decode_device_key(device_pub_key_b64url) else {
         return false;
     };
-    let statement = devicebind::session_login_statement(did, device_pub_key_b64url, relay_host, ts);
+    let statement =
+        devicebind::session_login_statement(did, device_pub_key_b64url, relay_host, nonce, ts);
     devicebind::verify_signature(&key, statement.as_bytes(), sig_b64)
 }
 

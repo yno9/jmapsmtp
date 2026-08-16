@@ -665,6 +665,7 @@ async fn dispatch(
         "/auth/signup" => handlers::auth_signup(&state, &req, &body),
         "/contacts" => handlers::contacts_list(&state, &req),
         "/contacts/" => handlers::contacts_put(&state, &req, &body),
+        "/account/session/challenge" => handlers::account_session_challenge(&state, &req),
         "/account/session" => handlers::account_session(&state, &req, &body),
         "/account/devices" => handlers::account_devices(&state, &req, &body),
         "/account/storage" => handlers::storage_summary(&state, &req),
@@ -1002,8 +1003,29 @@ mod handlers {
     }
     // ── devices and sessions ──────────────────────────────────────────────
 
+    /// Hand out a single-use nonce for the next `POST /account/session`
+    /// (`session_nonce.rs`). No credential and no request body: a nonce
+    /// authorises nothing by itself, so there is nothing here to gate.
+    pub fn account_session_challenge(state: &RelayState, req: &Request<()>) -> Response<Body> {
+        let mut res = if req.method() != axum::http::Method::GET {
+            method_not_allowed()
+        } else {
+            let nonce = state.session_nonces.issue();
+            match jmap_types::go_json::to_vec(&serde_json::json!({
+                "nonce": nonce,
+                "expires_in": jmapserver::session_nonce::NONCE_TTL_SECS,
+            })) {
+                Ok(body) => json_response(200, body),
+                Err(_) => text_error(500, "internal error"),
+            }
+        };
+        set_route_cors(&mut res, "GET, OPTIONS", "Content-Type");
+        res
+    }
+
     /// Login. **No Basic Auth**: a device signature over
-    /// `session:<did>:<devicePubKey>:<relayHost>:<ts>` is the whole credential.
+    /// `session:<did>:<devicePubKey>:<relayHost>:<nonce>:<ts>` is the whole
+    /// credential — the nonce from a prior challenge call, consumed here.
     pub fn account_session(state: &RelayState, req: &Request<()>, body: &[u8]) -> Response<Body> {
         let mut res = if req.method() != axum::http::Method::POST {
             method_not_allowed()
@@ -1014,6 +1036,7 @@ mod handlers {
                     &state.data_dir,
                     &login,
                     &host_header(req),
+                    &state.session_nonces,
                     now_unix(),
                 ) {
                     Err(e) => text_error(e.status(), e.message()),

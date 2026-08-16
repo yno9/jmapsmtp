@@ -82,7 +82,15 @@ fn the_route_table_matches_the_oracle() {
     }
 
     // Exact patterns: the oracle must not answer them with the mux's own 404.
-    for spec in specs.iter().filter(|s| !s.pattern.ends_with('/')) {
+    //
+    // `/account/session/challenge` is exempt: it is a genuinely NEW route
+    // (SPEC.md §11.28's nonce half), not a port of anything the Go side
+    // has — the whole reason a table of Go-side additions doesn't exist for
+    // it to be missing from.
+    for spec in specs
+        .iter()
+        .filter(|s| !s.pattern.ends_with('/') && s.pattern != "/account/session/challenge")
+    {
         let (status, body, _) = o.get(spec.pattern);
         assert_ne!(
             (status, body.as_str()),
@@ -111,7 +119,7 @@ fn the_routes_this_port_omits_are_absent_from_the_oracle() {
     let cfg = rust_config(o.http_port);
     assert_eq!(
         route_specs(&cfg, false).len(),
-        if cfg!(feature = "anchor") { 31 } else { 29 },
+        if cfg!(feature = "anchor") { 32 } else { 30 },
         "the route table changed size — if a route was added or removed on \
          purpose, update this number in the same commit"
     );

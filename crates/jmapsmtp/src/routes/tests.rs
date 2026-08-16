@@ -148,6 +148,9 @@ fn only_these_routes_are_open() {
         "/relay-info",
         // The HTML shell only; every call it makes carries the bearer token.
         "/admin/dashboard",
+        // A nonce authorises nothing by itself (session_nonce.rs's own
+        // note) — handing one out reveals nothing about any account.
+        "/account/session/challenge",
     ];
     expected.sort_unstable();
     assert_eq!(open, expected);

@@ -8,6 +8,7 @@ use super::*;
 use base64::Engine as _;
 use ed25519_dalek::{Signer as _, SigningKey};
 use jmapserver::devicebind;
+use jmapserver::session_nonce::SessionNonceStore;
 use pretty_assertions::assert_eq;
 
 fn cfg(json: &str) -> Config {
@@ -78,21 +79,40 @@ impl Setup {
         }
     }
 
-    fn session(&self, ts: i64) -> SessionRequest {
+    /// `nonce` must have come from a real `SessionNonceStore::issue()` (or
+    /// this method's own fresh-nonce convenience below) — a fabricated nonce
+    /// would fail `login()` at the nonce-consume step regardless of an
+    /// otherwise-valid signature, silently defeating whatever the test
+    /// actually wants to check.
+    fn session(&self, ts: i64, nonce: &str) -> SessionRequest {
         SessionRequest {
             username: "alice".into(),
             domain: "a.test".into(),
             did: self.did.clone(),
             device_pub_key: self.device_id.clone(),
+            nonce: nonce.into(),
             ts,
             sig: b64(&self
                 .device
                 .sign(
-                    devicebind::session_login_statement(&self.did, &self.device_id, RELAY_HOST, ts)
-                        .as_bytes(),
+                    devicebind::session_login_statement(
+                        &self.did,
+                        &self.device_id,
+                        RELAY_HOST,
+                        nonce,
+                        ts,
+                    )
+                    .as_bytes(),
                 )
                 .to_bytes()),
         }
+    }
+
+    /// `session()` against a nonce freshly issued from `nonces` — the
+    /// common case, where the test only cares that login succeeds or fails
+    /// for a reason OTHER than nonce plumbing.
+    fn session_fresh(&self, ts: i64, nonces: &SessionNonceStore) -> SessionRequest {
+        self.session(ts, &nonces.issue())
     }
 }
 
@@ -121,11 +141,11 @@ fn with_device(s: &Setup) -> tempfile::TempDir {
 fn all_five_fields_are_required_on_both_endpoints() {
     let s = setup();
     for (name, mut req) in [
-        ("username", s.session(NOW)),
-        ("domain", s.session(NOW)),
-        ("did", s.session(NOW)),
-        ("device_pub_key", s.session(NOW)),
-        ("sig", s.session(NOW)),
+        ("username", s.session(NOW, "n")),
+        ("domain", s.session(NOW, "n")),
+        ("did", s.session(NOW, "n")),
+        ("device_pub_key", s.session(NOW, "n")),
+        ("sig", s.session(NOW, "n")),
     ] {
         match name {
             "username" => req.username = "  ".into(),
@@ -144,7 +164,7 @@ fn all_five_fields_are_required_on_both_endpoints() {
 #[test]
 fn the_account_is_trimmed_and_folded() {
     let s = setup();
-    let mut req = s.session(NOW);
+    let mut req = s.session(NOW, "n");
     req.username = "  Alice ".into();
     req.domain = " A.TEST ".into();
     assert_eq!(req.account(), Ok(("alice".into(), "a.test".into())));
@@ -180,7 +200,15 @@ fn a_vouch_needs_no_label() {
 fn a_device_signature_alone_logs_in() {
     let s = setup();
     let tmp = with_device(&s);
-    let res = login(tmp.path(), &s.session(NOW), RELAY_HOST, NOW).expect("should log in");
+    let nonces = SessionNonceStore::new();
+    let res = login(
+        tmp.path(),
+        &s.session_fresh(NOW, &nonces),
+        RELAY_HOST,
+        &nonces,
+        NOW,
+    )
+    .expect("should log in");
     assert_eq!(res.email, "alice@a.test");
     assert_eq!(res.expires_in, SESSION_TOKEN_TTL_SECS);
     assert!(!res.token.is_empty());
@@ -208,29 +236,41 @@ fn a_device_signature_alone_logs_in() {
 fn every_login_failure_looks_the_same() {
     let s = setup();
     let tmp = with_device(&s);
+    let nonces = SessionNonceStore::new();
 
     let unknown_account = {
-        let mut r = s.session(NOW);
+        let mut r = s.session_fresh(NOW, &nonces);
         r.username = "nobody".into();
         r
     };
     let unregistered_device = {
         let other = SigningKey::from_bytes(&[77u8; 32]);
         let id = b64url(&other.verifying_key().to_bytes());
+        let nonce = nonces.issue();
+        let sig = b64(&other
+            .sign(
+                devicebind::session_login_statement(&s.did, &id, RELAY_HOST, &nonce, NOW)
+                    .as_bytes(),
+            )
+            .to_bytes());
         SessionRequest {
-            device_pub_key: id.clone(),
-            sig: b64(&other
-                .sign(devicebind::session_login_statement(&s.did, &id, RELAY_HOST, NOW).as_bytes())
-                .to_bytes()),
-            ..s.session(NOW)
+            device_pub_key: id,
+            nonce,
+            sig,
+            ..s.session_fresh(NOW, &nonces)
         }
     };
     let wrong_signature = SessionRequest {
         sig: b64(&[0u8; 64]),
-        ..s.session(NOW)
+        ..s.session_fresh(NOW, &nonces)
     };
-    let stale = s.session(NOW - 10_000);
-    let from_the_future = s.session(NOW + 10_000);
+    let stale = s.session_fresh(NOW - 10_000, &nonces);
+    let from_the_future = s.session_fresh(NOW + 10_000, &nonces);
+    let replayed_nonce = {
+        let req = s.session_fresh(NOW, &nonces);
+        login(tmp.path(), &req, RELAY_HOST, &nonces, NOW).expect("first use should succeed");
+        req
+    };
 
     for (name, req) in [
         ("an unknown account", unknown_account),
@@ -238,9 +278,10 @@ fn every_login_failure_looks_the_same() {
         ("a bad signature", wrong_signature),
         ("a stale timestamp", stale),
         ("a timestamp from the future", from_the_future),
+        ("a nonce already spent (replay)", replayed_nonce),
     ] {
         assert_eq!(
-            login(tmp.path(), &req, RELAY_HOST, NOW).err(),
+            login(tmp.path(), &req, RELAY_HOST, &nonces, NOW).err(),
             Some(DeviceError::SessionRejected),
             "{name}"
         );
@@ -254,13 +295,14 @@ fn every_login_failure_looks_the_same() {
 fn a_revoked_device_cannot_log_in() {
     let s = setup();
     let tmp = with_device(&s);
-    assert!(login(tmp.path(), &s.session(NOW), RELAY_HOST, NOW).is_ok());
+    let nonces = SessionNonceStore::new();
+    assert!(login(tmp.path(), &s.session_fresh(NOW, &nonces), RELAY_HOST, &nonces, NOW).is_ok());
 
     let acct = crate::auth_env::account_dir(tmp.path(), "a.test", "alice");
     jmapserver::devicekeys::remove_device_key(&acct, &s.device_id).unwrap();
 
     assert_eq!(
-        login(tmp.path(), &s.session(NOW), RELAY_HOST, NOW).err(),
+        login(tmp.path(), &s.session_fresh(NOW, &nonces), RELAY_HOST, &nonces, NOW).err(),
         Some(DeviceError::SessionRejected)
     );
 }
@@ -295,14 +337,20 @@ fn a_cold_recovery_needs_no_existing_credential() {
     write_device(tmp.path(), "a.test", "alice", &req, NOW).unwrap();
 
     // …and that device can now log in on its own.
+    let nonces = SessionNonceStore::new();
+    let nonce = nonces.issue();
     let session = SessionRequest {
         device_pub_key: new_id.clone(),
+        nonce: nonce.clone(),
         sig: b64(&new_device
-            .sign(devicebind::session_login_statement(&s.did, &new_id, RELAY_HOST, NOW).as_bytes())
+            .sign(
+                devicebind::session_login_statement(&s.did, &new_id, RELAY_HOST, &nonce, NOW)
+                    .as_bytes(),
+            )
             .to_bytes()),
-        ..s.session(NOW)
+        ..s.session(NOW, "unused")
     };
-    assert!(login(tmp.path(), &session, RELAY_HOST, NOW).is_ok());
+    assert!(login(tmp.path(), &session, RELAY_HOST, &nonces, NOW).is_ok());
 }
 
 // ── what this relay no longer judges ──────────────────────────────────────

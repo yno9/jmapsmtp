@@ -195,12 +195,26 @@ pub struct SessionResponse {
 /// discipline `did_bind.rs`'s binding check already uses, and for the same
 /// reason: a value the client fully controls is exactly what a captured
 /// signature would carry unchanged when replayed against a different relay.
+///
+/// The nonce is consumed **before** the signature check, not after: a nonce
+/// is fail-closed by construction (`SessionNonceStore::consume` removes it
+/// whether or not it turns out to be valid, so a second attempt with the
+/// same nonce always fails), and checking it first means an invalid
+/// signature never gets the chance to also learn whether a given nonce was
+/// live. The cost is that one failed login attempt burns the nonce — cheap
+/// to reissue (`GET /account/session/challenge` needs no credential either),
+/// so this is not a real usability loss.
 pub fn login(
     data_dir: &std::path::Path,
     req: &SessionRequest,
     relay_host: &str,
+    nonces: &jmapserver::session_nonce::SessionNonceStore,
     now_unix: i64,
 ) -> Result<SessionResponse, DeviceError> {
+    if !nonces.consume(&req.nonce) {
+        return Err(DeviceError::SessionRejected);
+    }
+
     let (username, domain) = req.account()?;
     let acct_dir = crate::auth_env::account_dir(data_dir, &domain, &username);
 
@@ -209,13 +223,15 @@ pub fn login(
         &req.did,
         &req.device_pub_key,
         relay_host,
+        &req.nonce,
         req.ts,
         &req.sig,
         now_unix,
     ) {
         // One message for every failure — unknown account, unregistered
-        // device, bad signature, stale timestamp. Distinguishing them would
-        // tell an unauthenticated caller which usernames and devices exist.
+        // device, bad signature, stale timestamp, spent/unknown nonce.
+        // Distinguishing them would tell an unauthenticated caller which
+        // usernames and devices exist.
         return Err(DeviceError::SessionRejected);
     }
 

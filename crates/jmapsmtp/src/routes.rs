@@ -74,6 +74,10 @@ const ALWAYS: &[RouteSpec] = &[
     r("/auth/signup", Guard::SelfAuth),
     r("/account/provision", Guard::SelfAuth),
     // ── devices.go ──
+    // A nonce is not a credential — it authorises nothing by itself, and
+    // handing one out reveals nothing about any account (session_nonce.rs's
+    // own note: deliberately not bound to a did/device up front).
+    r("/account/session/challenge", Guard::Open),
     // One pattern, dispatching on the method inside. Splitting it is the
     // production incident in gomux.rs's header.
     r("/account/session", Guard::SelfAuth),
