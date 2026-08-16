@@ -172,15 +172,15 @@ fn registering_a_domain_never_opens_it_for_everyone() {
 
     // And the gate actually holds.
     assert_eq!(
-        crate::provision::may_provision(&dc, &dc.provision_secret),
+        crate::provision::may_provision(&dc, "", "", &dc.provision_secret),
         Ok(())
     );
     assert_eq!(
-        crate::provision::may_provision(&dc, ""),
+        crate::provision::may_provision(&dc, "", "", ""),
         Err(crate::provision::Refusal::DomainNotOpen)
     );
     assert_eq!(
-        crate::provision::may_provision(&dc, "guessed"),
+        crate::provision::may_provision(&dc, "", "", "guessed"),
         Err(crate::provision::Refusal::DomainNotOpen)
     );
 }

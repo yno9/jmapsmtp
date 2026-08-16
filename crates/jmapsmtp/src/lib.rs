@@ -52,6 +52,7 @@ pub mod smtp_out;
 pub mod startup;
 pub mod submit;
 pub mod webpush;
+pub mod webvh_id;
 pub mod wkd;
 
 /// Write a file only its owner can read.

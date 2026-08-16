@@ -68,6 +68,49 @@ pub struct DomainConfig {
         skip_serializing_if = "String::is_empty"
     )]
     pub provision_secret: String,
+    /// The single `did:webvh` home domain whose identities may hold accounts
+    /// on THIS mail domain.
+    ///
+    /// A third mode of self-service registration, and the **strictest**: where
+    /// `allow_provision` opens a domain to anyone and `provision_secret` opens
+    /// it to anyone holding a shared string, this opens it to exactly the
+    /// identities already rooted at one named domain — no secret to leak, and
+    /// nothing to hand out.
+    ///
+    /// **Exactly one, never a list.** A list reads as convenience but is a
+    /// step backward: with N did-domains sharing one mail domain, two
+    /// identities rooted at DIFFERENT did-domains can both ask for the same
+    /// localpart, and only a separate claim registry — first-come across the
+    /// whole list — can say which one actually holds it. Pinned 1:1 instead,
+    /// non-duplication needs no registry at all: it falls out of the
+    /// `did:webvh` log store's own append-only-per-(domain,username) shape,
+    /// which already refuses to let a second identity overwrite a name's log.
+    /// The operator-facing cost is one config entry per accepted did-domain
+    /// (`example.biset.md` → `example.com`) rather than one shared list — more
+    /// entries, but each one is a fact ("this mail domain is example.com's"),
+    /// not a policy decision made once and forgotten which domains it still
+    /// lists.
+    ///
+    /// **This relay's own domain is not implicit.** If `biset.md` should hold
+    /// accounts for `biset.md` identities, it says so by naming itself here —
+    /// same value on both sides of the pair. An implicit self-entry would make
+    /// "my own domain" a separate case in the code, and there is deliberately
+    /// only one case here: a mail domain either names its one did-domain or it
+    /// does not.
+    ///
+    /// A wildcard is **not** representable, and that is the point. Anyone can
+    /// mint unlimited `did:webvh` identities under a domain they control, so a
+    /// value that accepted everything would be `allow_provision` wearing a
+    /// costume, while also pointing this relay's resolver at arbitrary hosts.
+    ///
+    /// Absent (the default) leaves the other two modes to decide, so an
+    /// existing config behaves exactly as it did.
+    #[serde(
+        default,
+        rename = "authorized_did_domain",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub authorized_did_domain: Option<String>,
 }
 
 impl DomainConfig {

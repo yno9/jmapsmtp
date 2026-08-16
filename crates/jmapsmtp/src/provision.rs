@@ -87,6 +87,17 @@ pub enum Refusal {
     /// [`Refusal::DeviceVouchRejected`] because the client can act on it: the
     /// vouch was fine, the *relay* cannot check it.
     DidMethodNeedsAnchor,
+    /// The domain accepts identities from a list of `did:webvh` home domains
+    /// and this DID is not rooted at one of them.
+    DidDomainNotAuthorized,
+    /// The DID is rooted at an authorized domain, but is asking for a
+    /// localpart other than its own name. See [`did_domain_gate`].
+    DidUsernameMismatch,
+    /// The DID could not be read as a `did:webvh` identifier at all, on a
+    /// domain that admits identities by their home domain — so there is no
+    /// home domain to check. Separate from the two above because it is a
+    /// malformed request rather than a refused one.
+    DidNotReadable,
 }
 
 impl Refusal {
@@ -98,7 +109,11 @@ impl Refusal {
             | Refusal::DidRequired
             | Refusal::DidSigRequired
             | Refusal::UnknownDomain => 400,
-            Refusal::NotAvailable | Refusal::DomainNotOpen => 403,
+            Refusal::DidNotReadable => 400,
+            Refusal::NotAvailable
+            | Refusal::DomainNotOpen
+            | Refusal::DidDomainNotAuthorized
+            | Refusal::DidUsernameMismatch => 403,
             Refusal::DidBindingRejected
             | Refusal::DeviceVouchRejected
             | Refusal::DidMethodNeedsAnchor => 401,
@@ -116,6 +131,11 @@ impl Refusal {
             Refusal::UnknownDomain => "unknown domain",
             Refusal::NotAvailable => "account creation not available",
             Refusal::DomainNotOpen => "domain not open for provisioning",
+            Refusal::DidNotReadable => "did is not a readable did:webvh identifier",
+            Refusal::DidDomainNotAuthorized => {
+                "this domain does not accept identities from that did's domain"
+            }
+            Refusal::DidUsernameMismatch => "username must match the did's own name",
             Refusal::UsernameTaken => "username taken",
             Refusal::DidBindingRejected => "did binding rejected",
             Refusal::IdentityOwnedByAnother => "identity owned by a different key",
@@ -173,13 +193,73 @@ pub fn resolve_domain(
     Ok((domain.to_string(), dom_cfg))
 }
 
+/// The `authorized_did_domain` mode: admit an identity by where it lives, and
+/// hold it to its own name.
+///
+/// # 1:1 is what removes the need for a claim registry
+///
+/// Because a mail domain names AT MOST ONE did-domain, non-duplication needs
+/// no registry at all here: the `did:webvh` log store's own append-only-per-
+/// (domain,username) shape already refuses to let a second identity overwrite
+/// a name's log, and with only one did-domain in play that IS the whole
+/// non-duplication guarantee. A list-of-many would reopen the gap — two
+/// did-domains sharing this mail domain could both mint an `alice`, and only
+/// a separate first-come registry could say which one actually holds
+/// `alice@here` — which is exactly why this field is one value, not a list.
+///
+/// # The username is not negotiable
+///
+/// A DID rooted at the authorized domain gets **its own localpart and no
+/// other**. `did:webvh:…:example.org:alice` may have `alice@here`, never
+/// `bob@here`, and if `alice@here` is already somebody else's it gets nothing —
+/// there is no fallback name to offer.
+///
+/// # Comparison is exact
+///
+/// `username` arrives already trimmed and lowercased (see [`validate`]), and
+/// the DID's own segment is compared as it appears. A DID whose path segment is
+/// `Alice` therefore matches nothing this relay will accept, which is correct:
+/// its log lives at `/Alice/did.jsonl`, a different document from `/alice/`,
+/// and folding the two together here would authorise a name against a log that
+/// does not carry it.
+pub fn did_domain_gate(dom_cfg: &DomainConfig, did: &str, username: &str) -> Result<(), Refusal> {
+    let Some(authorized) = &dom_cfg.authorized_did_domain else {
+        return Err(Refusal::DidDomainNotAuthorized);
+    };
+    let id = crate::webvh_id::parse(did).map_err(|_| Refusal::DidNotReadable)?;
+    if !authorized.eq_ignore_ascii_case(&id.domain) {
+        return Err(Refusal::DidDomainNotAuthorized);
+    }
+    if id.username != username {
+        return Err(Refusal::DidUsernameMismatch);
+    }
+    Ok(())
+}
+
 /// Whether this request may create an account on this domain.
 ///
-/// Open (`allow_provision`) or gated by a shared secret. A domain with
-/// neither is not creatable at all — a privileged domain is configured that
-/// way on purpose, and an empty `provision_secret` must never match an empty
-/// submitted one.
-pub fn may_provision(dom_cfg: &DomainConfig, submitted_secret: &str) -> Result<(), Refusal> {
+/// Three modes, checked in order of strictness rather than convenience:
+///
+/// 1. `authorized_did_domain` — admits identities rooted at exactly one named
+///    home domain. When set it is the **only** thing consulted: an operator
+///    who has named the domain they trust has said something more specific
+///    than "open", and letting `allow_provision` also be true would silently
+///    discard it.
+/// 2. `allow_provision` — open to anyone.
+/// 3. `provision_secret` — open to anyone holding the string. An empty secret
+///    must never match an empty submitted one.
+///
+/// A domain with none of the three is not creatable at all, which is how a
+/// privileged domain is configured on purpose.
+pub fn may_provision(
+    dom_cfg: &DomainConfig,
+    did: &str,
+    username: &str,
+    submitted_secret: &str,
+) -> Result<(), Refusal> {
+    if dom_cfg.authorized_did_domain.is_some() {
+        return did_domain_gate(dom_cfg, did, username);
+    }
     if dom_cfg.allow_provision {
         return Ok(());
     }

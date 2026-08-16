@@ -109,12 +109,22 @@ pub fn txt_proves_ownership(records: &[String], expected: &str) -> bool {
 /// **Never `allow_provision`.** A verified domain is gated by the secret handed
 /// back in the same response, so creating an account under it always needs
 /// proof of current DNS control.
+///
+/// **No `authorized_did_domain` either**, and not because it would be wrong:
+/// proving DNS control over `example.org` is a strictly stronger claim than
+/// holding a DID rooted there, so the two would agree. It is left absent
+/// because setting it would *replace* the secret gate rather than add to it
+/// (see [`crate::provision::may_provision`]) — a domain verified minutes ago
+/// would silently stop needing the proof it was just handed. Admitting
+/// identities by home domain is an operator's decision about a domain they
+/// configure, not something a verification flow may switch on by itself.
 pub fn registered_domain_config(cfg: &Config, domain: &str) -> DomainConfig {
     DomainConfig {
         dkim_selector: crate::dkim::DEFAULT_SELECTOR.to_string(),
         accounts: Default::default(),
         allow_provision: false,
         provision_secret: provision_secret_for(cfg, domain),
+        authorized_did_domain: None,
     }
 }
 

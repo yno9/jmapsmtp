@@ -199,6 +199,64 @@ pub fn claim(
     }
 }
 
+/// Ask the anchor to verify a binding proof WITHOUT recording a claim —
+/// the `authorized_did_domain` counterpart to [`claim`] (biset's ARC.md
+/// §2a). A mail domain pinned 1:1 to one did-domain needs no registry to
+/// enforce non-duplication: the did:webvh log store's own
+/// append-only-per-(domain,username) shape already is that guarantee, and
+/// the anchor's `/_anchor/verify-binding` route checks the DID's own webvh
+/// path segment against `domain`/`username` directly instead of consulting
+/// (or writing to) the claim registry.
+///
+/// Same verdict shape as [`claim`] minus `Conflict`: there is no registry
+/// entry to conflict with, so that status never comes back from this route.
+pub fn verify_binding(
+    transport: &dyn Transport,
+    anchor: &Ref,
+    localpart: &str,
+    domain: &str,
+    did: &str,
+    proof: &BindingProof,
+) -> Verdict {
+    if !anchor.is_configured() {
+        return Verdict::Error;
+    }
+    let body = jmap_types::go_json::to_vec(&serde_json::json!({
+        "domain": domain,
+        "username": localpart,
+        "did": did,
+        "did_sig": proof.sig,
+        "bind_ts": proof.ts,
+        "host": proof.host,
+    }));
+    let Ok(body) = body else {
+        return Verdict::Error;
+    };
+
+    let url = anchor.endpoint("/_anchor/verify-binding");
+    let Some((status, reason)) = transport.send("POST", &url, &anchor.token, Some(&body)) else {
+        return Verdict::Error;
+    };
+    match status {
+        200 => Verdict::Ok,
+        401 => {
+            eprintln!(
+                "[anchor] rejected binding for {localpart}@{domain}: {}",
+                reason.trim()
+            );
+            Verdict::Invalid
+        }
+        403 => {
+            eprintln!(
+                "[anchor] REFUSED THIS RELAY ({}) — check anchor_token against the anchor's relay_token",
+                anchor.url
+            );
+            Verdict::Error
+        }
+        _ => Verdict::Error,
+    }
+}
+
 /// Ask whether `did`'s **current** root key authorises this device.
 ///
 /// Stateless: nothing is recorded. The answer is cross-checked against the

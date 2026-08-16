@@ -31,6 +31,9 @@ fn b64url(bytes: &[u8]) -> String {
 }
 
 const NOW: i64 = 1_785_000_000;
+/// The host `login()` is called with below — this relay's own observation,
+/// standing in for a real request's `Host` header.
+const RELAY_HOST: &str = "mail.a.test";
 
 /// A did:dht identity plus one device. The identifier is the root public key,
 /// so nothing here needs an anchor.
@@ -85,7 +88,8 @@ impl Setup {
             sig: b64(&self
                 .device
                 .sign(
-                    devicebind::session_login_statement(&self.did, &self.device_id, ts).as_bytes(),
+                    devicebind::session_login_statement(&self.did, &self.device_id, RELAY_HOST, ts)
+                        .as_bytes(),
                 )
                 .to_bytes()),
         }
@@ -176,7 +180,7 @@ fn a_vouch_needs_no_label() {
 fn a_device_signature_alone_logs_in() {
     let s = setup();
     let tmp = with_device(&s);
-    let res = login(tmp.path(), &s.session(NOW), NOW).expect("should log in");
+    let res = login(tmp.path(), &s.session(NOW), RELAY_HOST, NOW).expect("should log in");
     assert_eq!(res.email, "alice@a.test");
     assert_eq!(res.expires_in, SESSION_TOKEN_TTL_SECS);
     assert!(!res.token.is_empty());
@@ -216,7 +220,7 @@ fn every_login_failure_looks_the_same() {
         SessionRequest {
             device_pub_key: id.clone(),
             sig: b64(&other
-                .sign(devicebind::session_login_statement(&s.did, &id, NOW).as_bytes())
+                .sign(devicebind::session_login_statement(&s.did, &id, RELAY_HOST, NOW).as_bytes())
                 .to_bytes()),
             ..s.session(NOW)
         }
@@ -236,7 +240,7 @@ fn every_login_failure_looks_the_same() {
         ("a timestamp from the future", from_the_future),
     ] {
         assert_eq!(
-            login(tmp.path(), &req, NOW).err(),
+            login(tmp.path(), &req, RELAY_HOST, NOW).err(),
             Some(DeviceError::SessionRejected),
             "{name}"
         );
@@ -250,13 +254,13 @@ fn every_login_failure_looks_the_same() {
 fn a_revoked_device_cannot_log_in() {
     let s = setup();
     let tmp = with_device(&s);
-    assert!(login(tmp.path(), &s.session(NOW), NOW).is_ok());
+    assert!(login(tmp.path(), &s.session(NOW), RELAY_HOST, NOW).is_ok());
 
     let acct = crate::auth_env::account_dir(tmp.path(), "a.test", "alice");
     jmapserver::devicekeys::remove_device_key(&acct, &s.device_id).unwrap();
 
     assert_eq!(
-        login(tmp.path(), &s.session(NOW), NOW).err(),
+        login(tmp.path(), &s.session(NOW), RELAY_HOST, NOW).err(),
         Some(DeviceError::SessionRejected)
     );
 }
@@ -294,11 +298,11 @@ fn a_cold_recovery_needs_no_existing_credential() {
     let session = SessionRequest {
         device_pub_key: new_id.clone(),
         sig: b64(&new_device
-            .sign(devicebind::session_login_statement(&s.did, &new_id, NOW).as_bytes())
+            .sign(devicebind::session_login_statement(&s.did, &new_id, RELAY_HOST, NOW).as_bytes())
             .to_bytes()),
         ..s.session(NOW)
     };
-    assert!(login(tmp.path(), &session, NOW).is_ok());
+    assert!(login(tmp.path(), &session, RELAY_HOST, NOW).is_ok());
 }
 
 // ── what this relay no longer judges ──────────────────────────────────────

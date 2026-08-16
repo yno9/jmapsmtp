@@ -573,6 +573,81 @@ async fn a_rejected_vouch_after_a_good_claim_creates_nothing() {
     assert!(!crate::auth_env::account_dir(&state.data_dir, "open.test", "carol").exists());
 }
 
+// ── authorized_did_domain: verify-binding instead of claim ─────────────────
+
+#[cfg(feature = "anchor")]
+fn authorized_did_domain_state(replies: Vec<(u16, &str)>) -> (Arc<RelayState>, Arc<ScriptedAnchor>) {
+    let tmp = tempfile::tempdir().unwrap().keep();
+    let cfg: Config = serde_json::from_str(
+        r#"{"domain":{"open.test":{"authorized_did_domain":"biset.md"}},
+            "anchor_url":"https://anchor.test","anchor_token":"relay-secret"}"#,
+    )
+    .unwrap();
+    let mut state = RelayState::with_tokens(cfg, tmp, "", "");
+    let transport = Arc::new(ScriptedAnchor {
+        replies: parking_lot::Mutex::new(
+            replies
+                .into_iter()
+                .map(|(s, b)| (s, b.to_string()))
+                .collect(),
+        ),
+        seen: Default::default(),
+    });
+    state.set_anchor(transport.clone());
+    (state, transport)
+}
+
+/// The one thing this whole mode exists to prove at the wire level: a domain
+/// configured with `authorized_did_domain` hits `/_anchor/verify-binding`,
+/// never `/_anchor/identity/*` — the claim registry is not consulted, and
+/// nothing is written to it.
+#[cfg(feature = "anchor")]
+#[tokio::test]
+async fn authorized_did_domain_calls_verify_binding_not_claim() {
+    let (state, anchor) = authorized_did_domain_state(vec![(200, ""), (200, "")]);
+    let (status, body) = provision(state.clone(), webvh_provision()).await;
+    assert_eq!(status, 201, "{body}");
+
+    let seen = anchor.seen.lock().clone();
+    assert_eq!(seen.len(), 2, "one verify-binding, one vouch");
+    assert!(
+        seen[0].starts_with("https://anchor.test/_anchor/verify-binding"),
+        "expected verify-binding, not the claim registry: {}",
+        seen[0]
+    );
+    assert!(
+        !seen[0].contains("/_anchor/identity/"),
+        "the claim registry route must never be hit on this path: {}",
+        seen[0]
+    );
+    assert!(
+        seen[1].starts_with("https://anchor.test/_anchor/devices/vouch"),
+        "{}",
+        seen[1]
+    );
+
+    // The body carries username explicitly (verify-binding has no
+    // localpart-in-path shape the way /_anchor/identity/<localpart> does).
+    assert!(seen[0].contains(r#""username":"carol""#), "{}", seen[0]);
+    assert!(seen[0].contains(r#""domain":"open.test""#), "{}", seen[0]);
+}
+
+/// verify-binding has no 409 — there is no registry entry to conflict with.
+/// A rejected binding here is always a 401 (signature/domain/username
+/// mismatch), never "owned by a different key".
+#[cfg(feature = "anchor")]
+#[tokio::test]
+async fn a_rejected_verify_binding_is_401_not_a_claim_conflict() {
+    let (state, anchor) = authorized_did_domain_state(vec![(401, "DID does not name this username")]);
+    let (status, _) = provision(state.clone(), webvh_provision()).await;
+    assert_eq!(
+        status,
+        crate::provision::Refusal::DidBindingRejected.status()
+    );
+    assert_eq!(anchor.seen.lock().len(), 1, "the vouch was never asked");
+    assert!(!crate::auth_env::account_dir(&state.data_dir, "open.test", "carol").exists());
+}
+
 // ── bring-your-own domain ─────────────────────────────────────────────────
 
 /// A registration that succeeds — the half `server_interop` cannot reach,
@@ -636,11 +711,11 @@ async fn a_verified_domain_is_registered_gated_and_never_open() {
         "one past registration must not open the domain forever"
     );
     assert_eq!(
-        crate::provision::may_provision(&registered, ""),
+        crate::provision::may_provision(&registered, "", "", ""),
         Err(crate::provision::Refusal::DomainNotOpen)
     );
     assert_eq!(
-        crate::provision::may_provision(&registered, &registered.provision_secret),
+        crate::provision::may_provision(&registered, "", "", &registered.provision_secret),
         Ok(())
     );
 

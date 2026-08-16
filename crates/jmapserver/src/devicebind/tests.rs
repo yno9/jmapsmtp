@@ -25,8 +25,8 @@ fn the_signed_statement_embeds_a_webvh_did_verbatim() {
         "no normalisation, no re-encoding — biset signs this exact string"
     );
     assert_eq!(
-        session_login_statement(WEBVH, "KEY", 1),
-        format!("session:{WEBVH}:KEY:1")
+        session_login_statement(WEBVH, "KEY", "mail.biset.md", 1),
+        format!("session:{WEBVH}:KEY:mail.biset.md:1")
     );
 }
 
@@ -37,8 +37,8 @@ fn the_signed_statement_embeds_a_webvh_did_verbatim() {
 #[test]
 fn the_signed_statements_have_their_exact_shape() {
     assert_eq!(
-        session_login_statement("did:dht:abc", "KEY", 1700000000),
-        "session:did:dht:abc:KEY:1700000000"
+        session_login_statement("did:dht:abc", "KEY", "mail.example.com", 1700000000),
+        "session:did:dht:abc:KEY:mail.example.com:1700000000"
     );
     assert_eq!(
         vouch_statement("did:dht:abc", "KEY", "MacBook", 1700000000),

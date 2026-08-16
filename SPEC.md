@@ -1348,6 +1348,49 @@ did:webvh にその近道は無く、**リレーは vouch 署名を一切検証�
 
 ---
 
+### 11.28 session ログイン文言に relayHost を追加（Go は追加していない）
+
+2026-08-16、biset 側 (`src/did/devicebind.ts`) が session ログインの署名文言に
+relayHost を足した——`bind:`/`devkey:` は元から relay host を含んでいたのに
+`session:` だけ抜けていたための穴埋め。抜けていたことで、時間窓（既定300秒）
+の中なら、あるrelayが受け取ったsession署名を**別のrelay**へそのまま再生でき
+た（同一デバイスが複数relayに登録されているのが前提の設計なので、実害あり）。
+
+移植側 (`devicebind.rs::session_login_statement`) も追随したが、Go
+(`go-jmapserver/devicebind.go`) は追随していない。
+
+```
+旧（Go のまま）:  session:<did>:<devicePubKeyB64url>:<unixSeconds>
+新（移植側）:      session:<did>:<devicePubKeyB64url>:<relayHost>:<unixSeconds>
+```
+
+`relayHost` は **このrelay自身が観測した** `Host` ヘッダー
+(`server.rs::host_header`) であり、リクエストボディの値ではない——
+`bind:` の検証と同じ理由（クライアントが自由に書ける値は、別relayへの
+再生でも変わらず書けてしまう）。
+
+#### 観測できる差異
+
+| 状況 | Go (oracle) | 移植 |
+|---|---|---|
+| 移植側の新形式（host入り）で署名したログイン | 401（未知の文言） | 200 |
+| Go の旧形式（host無し）で署名したログイン | 200 | 401（未知の文言） |
+
+`devices_interop.rs` の
+`the_oracles_session_statement_has_no_host_and_this_port_now_diverges_on_purpose`
+がこの表を固定している。oracle 向けの呼び出しは全て
+`Setup::legacy_session`（旧形式）を使う——`Setup::session`（新形式）を
+そのまま oracle に投げると、テストの本来の意図（鮮度切れ・鍵違いなど）
+とは無関係な理由（文言不一致）で 401 になり、何を検証しているか分からな
+くなるため。
+
+**これは nonce ではない。** `relayHost` は「別relayへの再生」を防ぐが、
+「同一relay・同一時間窓内での再生」は防がない——真のサーバー発行nonce
+にはchallenge往復が要り、この軽量な資格情報にその往復を課さない判断
+（`devicebind.ts`/`devicebind.rs` 双方のコメントに明記）。
+
+---
+
 ---
 
 ### 11.9 差分ハーネスでの扱い

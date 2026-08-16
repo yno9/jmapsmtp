@@ -243,7 +243,7 @@ fn a_registered_custom_domain_can_be_provisioned_onto() {
     );
     let (domain, dom_cfg) = resolve_domain(&anchorless(), &dynamic, "byo.test").unwrap();
     assert_eq!(domain, "byo.test");
-    assert_eq!(may_provision(&dom_cfg, "s3cret"), Ok(()));
+    assert_eq!(may_provision(&dom_cfg, "", "", "s3cret"), Ok(()));
 }
 
 #[test]
@@ -263,7 +263,7 @@ fn an_open_domain_needs_no_secret() {
         allow_provision: true,
         ..Default::default()
     };
-    assert_eq!(may_provision(&open, ""), Ok(()));
+    assert_eq!(may_provision(&open, "", "", ""), Ok(()));
 }
 
 #[test]
@@ -272,9 +272,9 @@ fn a_gated_domain_needs_the_right_secret() {
         provision_secret: "s3cret".into(),
         ..Default::default()
     };
-    assert_eq!(may_provision(&gated, "s3cret"), Ok(()));
-    assert_eq!(may_provision(&gated, "wrong"), Err(Refusal::DomainNotOpen));
-    assert_eq!(may_provision(&gated, ""), Err(Refusal::DomainNotOpen));
+    assert_eq!(may_provision(&gated, "", "", "s3cret"), Ok(()));
+    assert_eq!(may_provision(&gated, "", "", "wrong"), Err(Refusal::DomainNotOpen));
+    assert_eq!(may_provision(&gated, "", "", ""), Err(Refusal::DomainNotOpen));
 }
 
 /// A domain with neither flag is privileged: configured that way so it is not
@@ -283,9 +283,9 @@ fn a_gated_domain_needs_the_right_secret() {
 #[test]
 fn a_domain_with_no_secret_and_no_flag_is_not_creatable() {
     let privileged = DomainConfig::default();
-    assert_eq!(may_provision(&privileged, ""), Err(Refusal::DomainNotOpen));
+    assert_eq!(may_provision(&privileged, "", "", ""), Err(Refusal::DomainNotOpen));
     assert_eq!(
-        may_provision(&privileged, "anything"),
+        may_provision(&privileged, "", "", "anything"),
         Err(Refusal::DomainNotOpen)
     );
 }
@@ -378,4 +378,164 @@ fn the_two_conflicts_are_distinguishable_by_message() {
 #[test]
 fn an_unreachable_anchor_refuses_rather_than_proceeding() {
     assert_eq!(Refusal::AnchorUnavailable.status(), 503);
+}
+
+// ── authorized_did_domain ─────────────────────────────────────────────────
+
+const SCID: &str = "QmSCIDPlaceholder1111111111111111111111111111";
+
+fn by_did_domain(domain: &str) -> DomainConfig {
+    cfg(&format!(
+        r#"{{"domain":{{"mail.test":{{"authorized_did_domain":"{domain}"}}}}}}"#
+    ))
+    .domains["mail.test"]
+        .clone()
+}
+
+fn webvh(domain: &str, username: &str) -> String {
+    format!("did:webvh:{SCID}:{domain}:{username}")
+}
+
+/// The plain case: an identity rooted at the named domain, asking for its own
+/// name.
+#[test]
+fn an_identity_from_the_named_domain_may_have_its_own_name() {
+    let dom_cfg = by_did_domain("example.org");
+    assert_eq!(
+        may_provision(&dom_cfg, &webvh("example.org", "alice"), "alice", ""),
+        Ok(())
+    );
+}
+
+/// **The relay's own domain is not implicit.** A config naming `example.org`
+/// refuses `mail.test`'s own identities too — there is one rule, and "mine"
+/// is not an exception to it.
+#[test]
+fn the_relays_own_domain_is_not_implicitly_authorized() {
+    let dom_cfg = by_did_domain("example.org");
+    assert_eq!(
+        may_provision(&dom_cfg, &webvh("mail.test", "alice"), "alice", ""),
+        Err(Refusal::DidDomainNotAuthorized)
+    );
+}
+
+#[test]
+fn an_identity_from_a_different_domain_is_refused() {
+    let dom_cfg = by_did_domain("biset.md");
+    assert_eq!(
+        may_provision(&dom_cfg, &webvh("stranger.example", "alice"), "alice", ""),
+        Err(Refusal::DidDomainNotAuthorized)
+    );
+}
+
+/// The whole reason the append-only log store doubles as address exclusivity:
+/// a DID gets its own localpart and no other. This is also what a 1:1
+/// mail-domain:did-domain pairing needs no separate claim registry to
+/// enforce — see [`crate::provision::did_domain_gate`]'s own note.
+#[test]
+fn an_identity_may_not_ask_for_somebody_elses_name() {
+    let dom_cfg = by_did_domain("biset.md");
+    assert_eq!(
+        may_provision(&dom_cfg, &webvh("biset.md", "alice"), "bob", ""),
+        Err(Refusal::DidUsernameMismatch)
+    );
+}
+
+/// A DID whose path segment is `Alice` names a log at `/Alice/did.jsonl`. The
+/// localpart it would have to match is lowercased before it gets here, so the
+/// two never meet — which is the correct outcome, not a gap: folding them
+/// together would authorise `alice` against a document stored under `Alice`.
+#[test]
+fn a_capitalised_did_segment_matches_no_acceptable_localpart() {
+    let dom_cfg = by_did_domain("biset.md");
+    assert_eq!(
+        may_provision(&dom_cfg, &webvh("biset.md", "Alice"), "alice", ""),
+        Err(Refusal::DidUsernameMismatch)
+    );
+}
+
+/// Config is written by hand, so the domain name tolerates the casing a human
+/// gives it. The DID's own domain is already folded by the parser.
+#[test]
+fn domain_matching_ignores_case_on_both_sides() {
+    let dom_cfg = by_did_domain("Biset.MD");
+    assert_eq!(
+        may_provision(&dom_cfg, &webvh("BISET.md", "alice"), "alice", ""),
+        Ok(())
+    );
+}
+
+/// A domain admitting identities by home domain admits **only** those: a
+/// `did:dht`, or anything else this relay cannot read a home domain out of, has
+/// no home domain to check rather than a rejected one.
+#[test]
+fn a_did_with_no_readable_home_domain_is_a_malformed_request() {
+    let dom_cfg = by_did_domain("biset.md");
+    assert_eq!(
+        may_provision(&dom_cfg, "did:dht:abc", "alice", ""),
+        Err(Refusal::DidNotReadable)
+    );
+    assert_eq!(
+        may_provision(&dom_cfg, "", "alice", ""),
+        Err(Refusal::DidNotReadable)
+    );
+    // The legacy `dids:` path form, which names a different log URL.
+    assert_eq!(
+        may_provision(&dom_cfg, &format!("did:webvh:{SCID}:biset.md:dids:alice"), "alice", ""),
+        Err(Refusal::DidNotReadable)
+    );
+}
+
+/// **The strictest mode wins.** An operator who named the domain they trust
+/// said something more specific than "open"; letting `allow_provision` also
+/// answer would discard it silently and open the domain to everyone.
+#[test]
+fn a_did_domain_overrides_allow_provision_rather_than_adding_to_it() {
+    let dom_cfg = cfg(
+        r#"{"domain":{"mail.test":{"allow_provision":true,
+             "authorized_did_domain":"biset.md"}}}"#,
+    )
+    .domains["mail.test"]
+        .clone();
+    assert!(dom_cfg.allow_provision, "the open flag is really set");
+    assert_eq!(
+        may_provision(&dom_cfg, &webvh("stranger.example", "alice"), "alice", ""),
+        Err(Refusal::DidDomainNotAuthorized),
+        "allow_provision must not rescue an unnamed domain"
+    );
+}
+
+/// The same precedence against the secret gate: no secret, right or wrong,
+/// substitutes for being rooted at the named domain.
+#[test]
+fn a_did_domain_overrides_the_secret_gate_too() {
+    let dom_cfg = cfg(
+        r#"{"domain":{"mail.test":{"provision_secret":"s3cret",
+             "authorized_did_domain":"biset.md"}}}"#,
+    )
+    .domains["mail.test"]
+        .clone();
+    assert_eq!(
+        may_provision(&dom_cfg, &webvh("stranger.example", "alice"), "alice", "s3cret"),
+        Err(Refusal::DidDomainNotAuthorized)
+    );
+    // And the named identity needs no secret at all.
+    assert_eq!(
+        may_provision(&dom_cfg, &webvh("biset.md", "alice"), "alice", ""),
+        Ok(())
+    );
+}
+
+/// Absent is the default, and must leave every existing config behaving
+/// exactly as it did — the DID is not looked at.
+#[test]
+fn an_absent_value_changes_nothing() {
+    let open = cfg(r#"{"domain":{"mail.test":{"allow_provision":true}}}"#).domains["mail.test"]
+        .clone();
+    assert!(open.authorized_did_domain.is_none());
+    assert_eq!(
+        may_provision(&open, "did:dht:whatever", "alice", ""),
+        Ok(()),
+        "an unreadable DID is not this mode's concern when the mode is off"
+    );
 }

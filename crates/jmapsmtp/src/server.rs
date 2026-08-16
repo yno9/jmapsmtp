@@ -64,6 +64,11 @@ pub struct RelayState {
     /// Outbound SMTP attempts, by result. Counters, so they only ever rise.
     smtp_sent: std::sync::atomic::AtomicU64,
     smtp_failed: std::sync::atomic::AtomicU64,
+    /// Single-use nonces for `POST /account/session` (SPEC.md §11.28's
+    /// nonce half — `session_nonce.rs`'s own note has the full reasoning).
+    /// Not persisted: a nonce's whole useful lifetime is 60s, so losing this
+    /// on restart just means a client re-asks, which is an ordinary retry.
+    pub session_nonces: jmapserver::session_nonce::SessionNonceStore,
     mux: GoMux<RouteSpec>,
 }
 
@@ -99,6 +104,7 @@ impl RelayState {
             anchor: crate::anchor::HttpTransport::new(),
             smtp_sent: std::sync::atomic::AtomicU64::new(0),
             smtp_failed: std::sync::atomic::AtomicU64::new(0),
+            session_nonces: jmapserver::session_nonce::SessionNonceStore::new(),
             mux,
         })
     }
@@ -997,14 +1003,19 @@ mod handlers {
     // ── devices and sessions ──────────────────────────────────────────────
 
     /// Login. **No Basic Auth**: a device signature over
-    /// `session:<did>:<devicePubKey>:<ts>` is the whole credential.
+    /// `session:<did>:<devicePubKey>:<relayHost>:<ts>` is the whole credential.
     pub fn account_session(state: &RelayState, req: &Request<()>, body: &[u8]) -> Response<Body> {
         let mut res = if req.method() != axum::http::Method::POST {
             method_not_allowed()
         } else {
             match serde_json::from_slice::<crate::devices::SessionRequest>(body) {
                 Err(_) => text_error(400, "invalid JSON"),
-                Ok(login) => match crate::devices::login(&state.data_dir, &login, now_unix()) {
+                Ok(login) => match crate::devices::login(
+                    &state.data_dir,
+                    &login,
+                    &host_header(req),
+                    now_unix(),
+                ) {
                     Err(e) => text_error(e.status(), e.message()),
                     Ok(session) => match jmap_types::go_json::to_vec(&session) {
                         Ok(body) => json_response(200, body),
@@ -1470,7 +1481,11 @@ mod handlers {
                 Ok(v) => v,
                 Err(r) => return refuse(r),
             };
-            if let Err(r) = crate::provision::may_provision(&dom_cfg, &request.provision_secret) {
+            if let Err(r) = crate::provision::may_provision(&dom_cfg,
+                &request.did,
+                &username,
+                &request.provision_secret,
+            ) {
                 return refuse(r);
             }
 
@@ -1496,25 +1511,39 @@ mod handlers {
                 }
                 #[cfg(feature = "anchor")]
                 crate::provision::VouchPath::Anchor => {
-                    // Claim the name first. A vouch accepted against a name
-                    // this DID does not hold would bind a device to somebody
-                    // else's mailbox.
+                    // Claim the name first (or, on the authorized_did_domain
+                    // path, verify without claiming — see verify_binding's own
+                    // note on why no registry is needed there). Either way, a
+                    // vouch accepted against a name this DID does not hold
+                    // would bind a device to somebody else's mailbox.
                     let anchor = crate::anchor::anchor_ref(&state.cfg);
-                    let claimed = jmapserver::anchor::claim(
-                        state.anchor.as_ref(),
-                        &anchor,
-                        &username,
-                        &domain,
-                        &request.did,
-                        &jmapserver::anchor::BindingProof {
-                            sig: request.did_sig.clone(),
-                            ts: request.bind_ts,
-                            // Verbatim, as this relay observed it: it is what
-                            // the client signed against, and what stops a
-                            // signature captured elsewhere being replayed here.
-                            host: host_header(req),
-                        },
-                    );
+                    let binding_proof = jmapserver::anchor::BindingProof {
+                        sig: request.did_sig.clone(),
+                        ts: request.bind_ts,
+                        // Verbatim, as this relay observed it: it is what
+                        // the client signed against, and what stops a
+                        // signature captured elsewhere being replayed here.
+                        host: host_header(req),
+                    };
+                    let claimed = if dom_cfg.authorized_did_domain.is_some() {
+                        jmapserver::anchor::verify_binding(
+                            state.anchor.as_ref(),
+                            &anchor,
+                            &username,
+                            &domain,
+                            &request.did,
+                            &binding_proof,
+                        )
+                    } else {
+                        jmapserver::anchor::claim(
+                            state.anchor.as_ref(),
+                            &anchor,
+                            &username,
+                            &domain,
+                            &request.did,
+                            &binding_proof,
+                        )
+                    };
                     if let Some(refusal) = crate::anchor::provision_refusal(claimed) {
                         return refuse(refusal);
                     }

@@ -132,11 +132,12 @@ fn our_status(cfg: &Config, req: &ProvisionRequest) -> u16 {
     if let Err(r) = validate(cfg, req) {
         return r.status();
     }
-    let (_, dom_cfg) = match resolve_domain(cfg, &DynamicDomains::default(), &req.domain) {
+    let (domain, dom_cfg) = match resolve_domain(cfg, &DynamicDomains::default(), &req.domain) {
         Ok(v) => v,
         Err(r) => return r.status(),
     };
-    if let Err(r) = may_provision(&dom_cfg, &req.provision_secret) {
+    let username = req.username.trim().to_lowercase();
+    if let Err(r) = may_provision(&dom_cfg, &req.did, &username, &req.provision_secret) {
         return r.status();
     }
     match vouch_path(cfg, &req.did) {

@@ -34,6 +34,12 @@ fn b64url(bytes: &[u8]) -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
 }
 
+/// The host `RELAY_HOST` names in every non-`legacy_session` signature —
+/// this port's own session statement is host-bound (devicebind.rs's own
+/// note); it plays no role in `legacy_session`, which has no host segment
+/// at all.
+const RELAY_HOST: &str = "a.test";
+
 fn now() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -90,8 +96,30 @@ impl Setup {
             sig: b64(&self
                 .device
                 .sign(
-                    devicebind::session_login_statement(&self.did, &self.device_id, ts).as_bytes(),
+                    devicebind::session_login_statement(&self.did, &self.device_id, RELAY_HOST, ts)
+                        .as_bytes(),
                 )
+                .to_bytes()),
+        }
+    }
+
+    /// The Go oracle's session statement — `session:<did>:<devicePubKey>:<ts>`,
+    /// with no host segment. This port's own statement grew one (2026-08-16,
+    /// closing a cross-relay replay gap `bind:` already closed); the oracle
+    /// was never updated to match, so a request that logs into the oracle
+    /// successfully has to be signed the OLD way. Kept as its own method
+    /// rather than a flag on `session` so every call site says outright which
+    /// statement shape it means.
+    fn legacy_session(&self, ts: i64) -> SessionRequest {
+        SessionRequest {
+            username: "alice".into(),
+            domain: "a.test".into(),
+            did: self.did.clone(),
+            device_pub_key: self.device_id.clone(),
+            ts,
+            sig: b64(&self
+                .device
+                .sign(format!("session:{}:{}:{ts}", self.did, self.device_id).as_bytes())
                 .to_bytes()),
         }
     }
@@ -165,7 +193,7 @@ fn the_oracle_accepts_a_did_dht_vouch_where_this_port_needs_an_anchor() {
     assert_eq!(keys[0].label, "Laptop");
 
     // …and it logs in.
-    let (status, body) = o.post_json("/account/session", &session_body(&s.session(now())));
+    let (status, body) = o.post_json("/account/session", &session_body(&s.legacy_session(now())));
     assert_eq!(status, 200, "{body}");
     let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
     assert_eq!(parsed["email"], "alice@a.test");
@@ -344,7 +372,7 @@ fn every_login_refusal_is_indistinguishable_on_both_implementations() {
             "an account that does not exist",
             SessionRequest {
                 username: "nobody".into(),
-                ..s.session(ts)
+                ..s.legacy_session(ts)
             },
         ),
         (
@@ -352,22 +380,22 @@ fn every_login_refusal_is_indistinguishable_on_both_implementations() {
             SessionRequest {
                 device_pub_key: other_id.clone(),
                 sig: b64(&other
-                    .sign(devicebind::session_login_statement(&s.did, &other_id, ts).as_bytes())
+                    .sign(format!("session:{}:{other_id}:{ts}", s.did).as_bytes())
                     .to_bytes()),
-                ..s.session(ts)
+                ..s.legacy_session(ts)
             },
         ),
         (
             "a signature by the wrong key",
             SessionRequest {
                 sig: b64(&other
-                    .sign(devicebind::session_login_statement(&s.did, &s.device_id, ts).as_bytes())
+                    .sign(format!("session:{}:{}:{ts}", s.did, s.device_id).as_bytes())
                     .to_bytes()),
-                ..s.session(ts)
+                ..s.legacy_session(ts)
             },
         ),
-        ("a stale timestamp", s.session(ts - 10_000)),
-        ("a timestamp from the future", s.session(ts + 10_000)),
+        ("a stale timestamp", s.legacy_session(ts - 10_000)),
+        ("a timestamp from the future", s.legacy_session(ts + 10_000)),
     ];
 
     let mut answers = std::collections::BTreeSet::new();
@@ -396,7 +424,7 @@ fn revoking_a_device_is_immediate_on_both_implementations() {
     let ts = now();
 
     o.post_json("/account/devices", &vouch_body(&s.vouch("Laptop", ts)));
-    let (status, body) = o.post_json("/account/session", &session_body(&s.session(ts)));
+    let (status, body) = o.post_json("/account/session", &session_body(&s.legacy_session(ts)));
     assert_eq!(status, 200, "{body}");
     let token = serde_json::from_str::<serde_json::Value>(&body).unwrap()["token"]
         .as_str()
@@ -408,12 +436,41 @@ fn revoking_a_device_is_immediate_on_both_implementations() {
     jmapserver::devicekeys::remove_device_key(&acct, &s.device_id).unwrap();
 
     // The device cannot log in again…
-    let (status, _) = o.post_json("/account/session", &session_body(&s.session(now())));
+    let (status, _) = o.post_json("/account/session", &session_body(&s.legacy_session(now())));
     assert_eq!(status, 401);
 
     // …and the token it already held is gone, not merely unrenewable.
     assert!(
         jmapserver::devicekeys::check_session_token(&acct, &token, now()).is_none(),
         "a revocation that leaves live tokens working is not a revocation"
+    );
+}
+
+/// This port's session statement is host-bound (devicebind.rs's own note,
+/// 2026-08-16); the oracle's is not, and was never updated to match. Asserted
+/// as a difference rather than silently worked around everywhere else in
+/// this file (which all sign the oracle's OLD statement via
+/// `Setup::legacy_session` for exactly this reason) — SPEC.md needs a line
+/// for it, same as every other declared divergence here.
+#[test]
+fn the_oracles_session_statement_has_no_host_and_this_port_now_diverges_on_purpose() {
+    let Some(o) = oracle() else { return };
+    let s = setup(61);
+    let ts = now();
+
+    o.post_json("/account/devices", &vouch_body(&s.vouch("Laptop", ts)));
+
+    // The oracle accepts its own (host-less) statement…
+    let (status, body) = o.post_json("/account/session", &session_body(&s.legacy_session(ts)));
+    assert_eq!(status, 200, "{body}");
+
+    // …and rejects this port's CURRENT statement (RELAY_HOST-bound) outright,
+    // even though it's a genuine signature by the same device key over the
+    // same did/ts. If the oracle ever starts accepting this, the two
+    // implementations have re-converged and `legacy_session` can be retired.
+    let (status, body) = o.post_json("/account/session", &session_body(&s.session(ts)));
+    assert_eq!(
+        status, 401,
+        "the oracle unexpectedly accepted a host-bound statement: {body}"
     );
 }

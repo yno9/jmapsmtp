@@ -58,6 +58,62 @@ device binding with it.
 
 ---
 
+## 2a. `authorized_did_domain` — a third provisioning mode, and why it is one value, not a list
+
+`DomainConfig` has three ways to open a mail domain to self-service account
+creation, checked in strictness order (`provision.rs::may_provision`):
+`authorized_did_domain` (below), `allow_provision` (anyone), `provision_secret`
+(anyone holding a shared string). A domain with none of the three is not
+creatable at all.
+
+`authorized_did_domain` admits identities by where their `did:webvh` is
+rooted, and holds them to their own name: `did:webvh:{scid}:{that
+domain}:{username}` may have `{username}@{this mail domain}`, nothing else.
+The check is a string parse and two comparisons
+(`webvh_id.rs`/`did_domain_gate`) — no anchor round trip, no network.
+
+**It is `Option<String>`, never `Vec<String>`.** A mail domain names AT MOST
+ONE did-domain. This is not a limitation worked around elsewhere — it is what
+makes the whole mode need no separate claim registry: with exactly one
+did-domain per mail domain, the `did:webvh` log store's own
+append-only-per-(domain,username) shape already IS the non-duplication
+guarantee (one log per name, first writer wins, no second identity can ever
+overwrite it). A list of N did-domains sharing one mail domain would reopen
+the gap a registry exists to close — two different did-domains could both
+mint an `alice`, and something has to decide, first-come, which `alice@here`
+actually is. Pinning 1:1 is what lets that something be "nothing" instead of
+a new stateful service.
+
+Configured as an explicit pair per mail domain — `config.example.json`:
+
+```json
+"domain": {
+  "biset.md":   { "authorized_did_domain": "biset.md" },
+  "t.biset.md": { "authorized_did_domain": "t.biset.md" }
+}
+```
+
+**The relay's own domain is not implicit.** `biset.md` admits `biset.md`
+identities because it says so, same value on both sides — there is one rule,
+and "my own domain" is not a special case of it. A future third-party
+domain — some operator's `example.com` identities landing on this relay's
+`example.biset.md` — is the identical shape, one more pair, not a different
+code path (`the_relays_own_domain_is_not_implicitly_authorized`,
+`an_identity_from_the_named_domain_may_have_its_own_name` in
+`provision/tests.rs`).
+
+That third-party case is not yet reachable end to end: this relay resolves
+`did:webvh` documents by asking its own anchor (`anchor.rs`), and the anchor
+today only serves logs it hosts itself. A pair naming a domain the anchor does
+not host cannot be verified — `authorized_did_domain` will accept the config,
+but every provision against it fails at the anchor's resolve, not silently.
+Making that case real needs the anchor to resolve an ARBITRARY did-domain's
+log over HTTPS (not just its own store), which needs its own SSRF posture
+(no private/loopback/link-local targets, a size cap, a timeout) before it is
+safe to point at operator-supplied domains — tracked, not yet built.
+
+---
+
 ## 3. Crates
 
 | Crate | Ported from | Holds |

@@ -21,6 +21,12 @@
         },
         "you2": {}
       }
+    },
+    "biset.md": {
+      "authorized_did_domain": "biset.md"
+    },
+    "t.biset.md": {
+      "authorized_did_domain": "t.biset.md"
     }
   }
 }

@@ -119,6 +119,38 @@ fn now() -> i64 {
         .as_secs() as i64
 }
 
+/// The Go side's session statement — no `relayHost` segment
+/// (`devicebind::session_login_statement` grew one, SPEC.md §11.28). This
+/// file's job is disk-format interop, not the statement contract, so every
+/// call site below signs and verifies the OLD shape both implementations
+/// still agree on.
+fn legacy_session_login_statement(did: &str, device_pub_key_b64url: &str, ts: i64) -> String {
+    format!("session:{did}:{device_pub_key_b64url}:{ts}")
+}
+
+/// Mirrors `devicekeys::verify_device_session` against the legacy statement
+/// above, for the same reason.
+fn legacy_verify_device_session(
+    dir: &std::path::Path,
+    did: &str,
+    device_pub_key_b64url: &str,
+    ts: i64,
+    sig_b64: &str,
+    now_unix: i64,
+) -> bool {
+    if !devicebind::is_fresh(ts, now_unix) {
+        return false;
+    }
+    if !devicekeys::has_device_key(dir, device_pub_key_b64url) {
+        return false;
+    }
+    let Some(key) = devicebind::decode_device_key(device_pub_key_b64url) else {
+        return false;
+    };
+    let statement = legacy_session_login_statement(did, device_pub_key_b64url, ts);
+    devicebind::verify_signature(&key, statement.as_bytes(), sig_b64)
+}
+
 fn sign(signing: &ed25519_dalek::SigningKey, msg: &str) -> String {
     use base64::Engine as _;
     use ed25519_dalek::Signer as _;
@@ -309,12 +341,9 @@ fn session_logins_are_judged_identically() {
     )
     .unwrap();
 
-    let good = sign(&signing, &devicebind::session_login_statement(did, &id, ts));
+    let good = sign(&signing, &legacy_session_login_statement(did, &id, ts));
     // Signed over a different timestamp than the one presented.
-    let wrong = sign(
-        &signing,
-        &devicebind::session_login_statement(did, &id, ts - 1),
-    );
+    let wrong = sign(&signing, &legacy_session_login_statement(did, &id, ts - 1));
 
     for (name, sig, ts, expected) in [
         ("a valid login", good.clone(), ts, true),
@@ -334,7 +363,7 @@ fn session_logins_are_judged_identically() {
                 ..Default::default()
             }],
         );
-        let rust = devicekeys::verify_device_session(dir.path(), did, &id, ts, &sig, now());
+        let rust = legacy_verify_device_session(dir.path(), did, &id, ts, &sig, now());
         assert_eq!(results[0].ok, expected, "{name}: Go disagreed");
         assert_eq!(rust, expected, "{name}: Rust disagreed");
     }
@@ -349,7 +378,7 @@ fn an_unauthorised_device_cannot_log_in() {
     let (signing, id) = device_keypair();
     let did = "did:webvh:QmSCID1111111111111111111111111111:a.test:dids:alice";
     let ts = now();
-    let sig = sign(&signing, &devicebind::session_login_statement(did, &id, ts));
+    let sig = sign(&signing, &legacy_session_login_statement(did, &id, ts));
 
     // Nothing was ever written for this device.
     let results = go(
@@ -365,7 +394,7 @@ fn an_unauthorised_device_cannot_log_in() {
         }],
     );
     assert!(!results[0].ok);
-    assert!(!devicekeys::verify_device_session(
+    assert!(!legacy_verify_device_session(
         dir.path(),
         did,
         &id,

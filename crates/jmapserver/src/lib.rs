@@ -20,6 +20,7 @@ pub mod mime;
 pub mod push;
 pub mod refs;
 pub mod server;
+pub mod session_nonce;
 pub mod storage;
 pub mod store;
 pub mod zbase32;

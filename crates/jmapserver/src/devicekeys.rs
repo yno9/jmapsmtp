@@ -137,11 +137,18 @@ pub fn remove_device_key(dir: &Path, id: &str) -> io::Result<()> {
 /// a **later** identity-key rotation. The DID is only part of the signed
 /// statement, binding the login to one identity; the authorisation decision is
 /// purely "is this device on file for this account".
+///
+/// `relay_host` is **this relay's own observation** of the host the client
+/// connected to (a `Host` header read off the transport, the same shape
+/// `bind:`'s check uses) — not a value read back out of the request body,
+/// which the client controls and a captured-and-replayed request would carry
+/// unchanged regardless of which relay it's replayed against.
 #[must_use]
 pub fn verify_device_session(
     dir: &Path,
     did: &str,
     device_pub_key_b64url: &str,
+    relay_host: &str,
     ts: i64,
     sig_b64: &str,
     now_unix: i64,
@@ -155,7 +162,7 @@ pub fn verify_device_session(
     let Some(key) = devicebind::decode_device_key(device_pub_key_b64url) else {
         return false;
     };
-    let statement = devicebind::session_login_statement(did, device_pub_key_b64url, ts);
+    let statement = devicebind::session_login_statement(did, device_pub_key_b64url, relay_host, ts);
     devicebind::verify_signature(&key, statement.as_bytes(), sig_b64)
 }
 

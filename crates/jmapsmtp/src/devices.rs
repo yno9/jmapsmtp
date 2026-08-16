@@ -3,11 +3,21 @@
 //!
 //! This is the DID credential chain at runtime (SPEC.md §10-A):
 //!
+//! - **`GET /account/session/challenge`** hands out a single-use nonce
+//!   (`jmapserver::session_nonce`), also with no credential — the same
+//!   "no prior session available yet" posture the whole chain has. Its
+//!   answer feeds the session statement below.
+//!
 //! - **`POST /account/session`** is login. It carries **no Basic Auth** — a
-//!   device signature over `session:<did>:<devicePubKey>:<ts>` is the whole
-//!   credential, checked against the pubkey this account already recorded from
-//!   a prior vouch. That replaces a static bearer with something that expires
-//!   and can be revoked per device.
+//!   device signature over `session:<did>:<devicePubKey>:<relayHost>:<nonce>:<ts>`
+//!   is the whole credential, checked against the pubkey this account already
+//!   recorded from a prior vouch. That replaces a static bearer with
+//!   something that expires and can be revoked per device. The nonce closes
+//!   what `relayHost` alone left open (SPEC.md §11.28): `relayHost` stops a
+//!   captured signature being replayed against a DIFFERENT relay, but says
+//!   nothing about replaying it against the SAME one inside the freshness
+//!   window — the nonce is consumed on first use, so a second POST of the
+//!   identical signed statement fails regardless of how fresh `ts` still is.
 //!
 //! - **`POST /account/devices`** vouches a *new* device, and is deliberately
 //!   **not** behind `authenticate()` either. The vouch signature is the proof.
@@ -41,6 +51,10 @@ pub struct SessionRequest {
     pub did: String,
     #[serde(default, rename = "device_pub_key")]
     pub device_pub_key: String,
+    /// From a prior `GET /account/session/challenge`. Required and consumed
+    /// exactly once — see `jmapserver::session_nonce` for why.
+    #[serde(default)]
+    pub nonce: String,
     #[serde(default)]
     pub ts: i64,
     #[serde(default)]
@@ -174,9 +188,17 @@ pub struct SessionResponse {
 ///
 /// No credential is consulted beyond the device pubkey already on file, which
 /// is the point — the signature *is* the credential.
+///
+/// `relay_host` is **this relay's own observation** of the request's `Host`
+/// header, passed by the caller rather than read from `req.host` — the same
+/// "the relay reports the host it saw, not the host the client claims"
+/// discipline `did_bind.rs`'s binding check already uses, and for the same
+/// reason: a value the client fully controls is exactly what a captured
+/// signature would carry unchanged when replayed against a different relay.
 pub fn login(
     data_dir: &std::path::Path,
     req: &SessionRequest,
+    relay_host: &str,
     now_unix: i64,
 ) -> Result<SessionResponse, DeviceError> {
     let (username, domain) = req.account()?;
@@ -186,6 +208,7 @@ pub fn login(
         &acct_dir,
         &req.did,
         &req.device_pub_key,
+        relay_host,
         req.ts,
         &req.sig,
         now_unix,
