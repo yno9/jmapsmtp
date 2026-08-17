@@ -140,6 +140,11 @@ impl RelayState {
         };
         let _ = store.put_mailboxes(&[crate::handler::default_inbox(&email)]);
         self.dyn_accounts.insert(email.clone());
+        // Aliases registered via `/account/alias` persist to disk (this
+        // function's own doc comment: the restart scan and provisioning both
+        // funnel through here, so reading them back here — rather than in
+        // each caller — is what keeps a rename surviving a restart).
+        let aliases = crate::auth_env::read_aliases(&self.data_dir, domain, localpart);
         self.accounts.insert(
             crate::handler::AccountStore {
                 email: email.clone(),
@@ -148,7 +153,7 @@ impl RelayState {
                 dir,
                 store: Arc::new(store),
             },
-            &[],
+            &aliases,
         );
         // **The store is not usable until this runs.** `Email/set create` and
         // `EmailSubmission/set` are entirely the application's business — the
@@ -686,6 +691,7 @@ async fn dispatch(
         #[cfg(feature = "anchor")]
         "/admin/drain-anchor" => handlers::drain_anchor(&state, &req),
         "/account/delete" => handlers::account_delete(&state, &req),
+        "/account/alias" => handlers::account_alias(&state, &req, &body),
         "/account/storage/purge-messages" => handlers::storage_purge(&state, &req),
         "/admin/dashboard" => handlers::admin_dashboard(),
         "/metrics" => handlers::metrics(&state),
@@ -1512,19 +1518,45 @@ mod handlers {
                 return refuse(r);
             }
 
-            let acct_dir = crate::auth_env::account_dir(&state.data_dir, &domain, &username);
-            let already = state.dyn_accounts.contains(&format!("{username}@{domain}"))
-                || state
-                    .accounts
-                    .get(&format!("{username}@{domain}"))
-                    .is_some();
+            // SCID-primary accounts (PLANSCID.md): the actual JMAP account is
+            // keyed by the DID's permanent SCID segment, never by the human
+            // name being claimed here — a later rename (Edit identity)
+            // becomes an alias-table update, never a data move. Falls back
+            // to the human username itself when the DID doesn't read as
+            // biset's own did:webvh shape (a different method, an apex DID,
+            // a foreign did:webvh convention): the claim/anchor
+            // authorization below already accepts those, so provisioning
+            // must not now refuse them for a reason unrelated to that
+            // authorization.
+            let primary_localpart = crate::webvh_id::parse(&request.did)
+                .ok()
+                .map(|id| id.scid.to_lowercase())
+                .filter(|scid| !scid.is_empty())
+                .unwrap_or_else(|| username.clone());
+            let primary_email = format!("{primary_localpart}@{domain}");
+
+            let acct_dir = crate::auth_env::account_dir(&state.data_dir, &domain, &primary_localpart);
+            let already = state.dyn_accounts.contains(&primary_email)
+                || state.accounts.get(&primary_email).is_some();
             if crate::provision::name_is_taken(
                 &acct_dir,
                 &state.data_dir,
                 &domain,
-                &username,
+                &primary_localpart,
                 already,
             ) {
+                return refuse(crate::provision::Refusal::UsernameTaken);
+            }
+            // The human name itself must not already be someone else's
+            // alias — the check above only looked at the SCID's own
+            // directory, which is empty for a genuinely new identity even
+            // when the name it wants is already spoken for by a different
+            // account (found while designing this: without this, a second
+            // identity could register a name already aliased elsewhere,
+            // silently stealing its future delivery).
+            if let Some(existing) = state.accounts.resolve(&format!("{username}@{domain}"))
+                && existing.email != primary_email
+            {
                 return refuse(crate::provision::Refusal::UsernameTaken);
             }
 
@@ -1596,10 +1628,18 @@ mod handlers {
                         bind_ts: request.device_vouch_ts,
                         sig: request.device_vouch_sig.clone(),
                     };
+                    // Filed under the SCID directory, not the human name —
+                    // this account's OWN future logins (`/account/session`,
+                    // a second device's `/account/devices`) will present
+                    // `primary_localpart` as their `username`, since that is
+                    // what the client is told to use as its account identity
+                    // below. Filing it under the human name here would leave
+                    // every one of those looking in a directory nothing was
+                    // ever written to.
                     if crate::devices::write_device(
                         &state.data_dir,
                         &domain,
-                        &username,
+                        &primary_localpart,
                         &vouch,
                         now_unix(),
                     )
@@ -1621,14 +1661,36 @@ mod handlers {
                 && let Ok(bytes) = serde_json::to_vec(envelope)
                 && let Ok(env) = cryptenv::Envelope::from_bytes(&bytes)
             {
-                let _ = crate::auth_env::write_envelope(&state.data_dir, &domain, &username, &env);
+                let _ =
+                    crate::auth_env::write_envelope(&state.data_dir, &domain, &primary_localpart, &env);
             }
 
-            let email = format!("{username}@{domain}");
-            state.register_dyn_account(&username, &domain);
+            state.register_dyn_account(&primary_localpart, &domain);
+            // The human name becomes a delivery alias for the SCID account
+            // just registered, rather than an account of its own — this is
+            // the whole point (PLANSCID.md): the ONLY case with nothing to
+            // alias is when the DID wasn't webvh-shaped and `primary_localpart`
+            // already equals `username`.
+            if primary_localpart != username {
+                let alias = format!("{username}@{domain}");
+                state.accounts.add_alias(&alias, &primary_email);
+                let current = state.accounts.aliases_for(&primary_email);
+                if crate::auth_env::write_aliases(
+                    &state.data_dir,
+                    &domain,
+                    &primary_localpart,
+                    &current,
+                )
+                .is_err()
+                {
+                    eprintln!(
+                        "[provision] alias {alias} for {primary_email} failed to persist — will not survive a restart"
+                    );
+                }
+            }
 
             let mut out = serde_json::Map::new();
-            out.insert("email".into(), email.into());
+            out.insert("email".into(), primary_email.into());
             // Present only when the client actually sent a DID.
             //
             // Unreachable as written: `validate` already refuses an empty DID
@@ -1688,6 +1750,76 @@ mod handlers {
             no_content()
         })();
         set_route_cors(&mut res, "POST, OPTIONS", "Authorization, Content-Type");
+        res
+    }
+
+    /// `GET`/`POST /account/alias` — the caller's own extra deliverable
+    /// addresses (PLANSCID.md). GET lists them; POST adds or removes one.
+    ///
+    /// Scoped to the authenticated account only, same as every other
+    /// `/account/*` route — the target primary comes from the credential,
+    /// never the body, so this can never alias someone else's mailbox onto
+    /// (or off of) the caller's.
+    pub fn account_alias(state: &RelayState, req: &Request<()>, body: &[u8]) -> Response<Body> {
+        let mut res = (|| {
+            let Some((domain, localpart)) = authenticate(state, req) else {
+                return unauthorized();
+            };
+            let primary = format!("{localpart}@{domain}");
+
+            match *req.method() {
+                axum::http::Method::GET => {
+                    let aliases = state.accounts.aliases_for(&primary);
+                    match jmap_types::go_json::to_vec(&aliases) {
+                        Ok(body) => json_response(200, body),
+                        Err(_) => text_error(500, "internal error"),
+                    }
+                }
+                axum::http::Method::POST => {
+                    #[derive(serde::Deserialize)]
+                    #[serde(rename_all = "lowercase")]
+                    enum Op {
+                        Add,
+                        Remove,
+                    }
+                    #[derive(serde::Deserialize)]
+                    struct AliasRequest {
+                        op: Op,
+                        address: String,
+                    }
+                    let Ok(request) = serde_json::from_slice::<AliasRequest>(body) else {
+                        return text_error(400, "invalid JSON");
+                    };
+                    let address = request.address.trim().to_lowercase();
+                    if address.is_empty() || !address.contains('@') {
+                        return text_error(400, "invalid address");
+                    }
+                    let ok = match request.op {
+                        Op::Add => state.accounts.add_alias(&address, &primary),
+                        Op::Remove => state.accounts.remove_alias(&address, &primary),
+                    };
+                    if !ok {
+                        return text_error(409, "alias change refused");
+                    }
+                    // The live table (just updated above) is the one delivery
+                    // and GET both read from; this file is only what a
+                    // restart's `scan_dyn_accounts` reloads it from — so a
+                    // write failure here is a "won't survive a restart" bug,
+                    // not a "the change didn't apply" one. Best-effort by the
+                    // same reasoning `register_dyn_account`'s persistence
+                    // note gives for reading it back.
+                    let current = state.accounts.aliases_for(&primary);
+                    if crate::auth_env::write_aliases(&state.data_dir, &domain, &localpart, &current)
+                        .is_err()
+                    {
+                        eprintln!("[account/alias] persisted alias list failed to write for {primary} — will not survive a restart");
+                    }
+                    no_content()
+                }
+                _ => method_not_allowed(),
+            }
+        })();
+        set_route_cors(&mut res, "GET, POST, OPTIONS", "Authorization, Content-Type");
         res
     }
 

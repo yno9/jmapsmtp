@@ -86,6 +86,10 @@ const ALWAYS: &[RouteSpec] = &[
     r("/contacts", Guard::Account),
     r("/contacts/", Guard::Account),
     r("/account/delete", Guard::Account),
+    // One pattern, dispatching on the method inside (GET lists, POST adds/
+    // removes) — same shape as `/account/session` above, same reason
+    // (gomux.rs's header).
+    r("/account/alias", Guard::Account),
     r("/account/storage", Guard::Account),
     r("/account/storage/messages", Guard::Account),
     r("/account/storage/export", Guard::Account),

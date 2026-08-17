@@ -503,15 +503,33 @@ async fn an_anchored_provision_claims_then_vouches_then_writes_the_device() {
         seen[0]
     );
 
-    let acct = crate::auth_env::account_dir(&state.data_dir, "open.test", "carol");
+    // Filed under the DID's SCID, not the human name "carol" — SCID-primary
+    // accounts (PLANSCID.md): the account itself is keyed by the permanent
+    // SCID segment, and "carol" becomes a delivery alias instead (checked
+    // below), so a later username change is never a directory move.
+    let acct = crate::auth_env::account_dir(
+        &state.data_dir,
+        "open.test",
+        "qmscid111111111111111111111111111111111111111",
+    );
     assert_eq!(
         jmapserver::devicekeys::list_device_keys(&acct).len(),
         1,
         "the device key is written only after the anchor agrees"
     );
+    let parsed = serde_json::from_str::<serde_json::Value>(&body).unwrap();
+    assert_eq!(parsed["did_bound"], true);
     assert_eq!(
-        serde_json::from_str::<serde_json::Value>(&body).unwrap()["did_bound"],
-        true
+        parsed["email"], "qmscid111111111111111111111111111111111111111@open.test",
+        "the client is told its SCID address, not the human name it claimed"
+    );
+    assert_eq!(
+        state
+            .accounts
+            .resolve("carol@open.test")
+            .map(|a| a.email.clone()),
+        Some("qmscid111111111111111111111111111111111111111@open.test".to_string()),
+        "the human name is registered as an alias to the SCID account"
     );
 }
 

@@ -84,6 +84,37 @@ pub fn write_auth_hash(
     crate::write_private(&dir.join("auth_token_hash"), hash_b64.as_bytes())
 }
 
+pub fn aliases_file(data_dir: &Path, domain: &str, localpart: &str) -> PathBuf {
+    account_dir(data_dir, domain, localpart).join("aliases")
+}
+
+/// The extra deliverable addresses registered for this account, one per
+/// line — never the account's own primary address, which `Accounts::insert`
+/// wires up implicitly on every start regardless of this file (PLANSCID.md).
+/// Missing file = no aliases, same "absence is empty, not an error"
+/// convention as `read_auth_hash`.
+pub fn read_aliases(data_dir: &Path, domain: &str, localpart: &str) -> Vec<String> {
+    std::fs::read_to_string(aliases_file(data_dir, domain, localpart))
+        .map(|s| {
+            s.lines()
+                .map(|l| l.trim().to_lowercase())
+                .filter(|l| !l.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+pub fn write_aliases(
+    data_dir: &Path,
+    domain: &str,
+    localpart: &str,
+    aliases: &[String],
+) -> std::io::Result<()> {
+    let dir = account_dir(data_dir, domain, localpart);
+    std::fs::create_dir_all(&dir)?;
+    crate::write_private(&dir.join("aliases"), aliases.join("\n").as_bytes())
+}
+
 /// Whether the account exists, by the definition above.
 pub fn account_exists(data_dir: &Path, domain: &str, localpart: &str) -> bool {
     !read_auth_hash(data_dir, domain, localpart).is_empty()

@@ -246,6 +246,56 @@ impl Accounts {
         inner.stores.get(primary).cloned()
     }
 
+    /// Registers one extra deliverable address for an ALREADY-existing
+    /// primary — the SCID-account scheme's whole point (PLANSCID.md): a
+    /// human-chosen username becomes an alias pointing at the account's
+    /// permanent SCID identity, so renaming it later is this call again with
+    /// a different address, never a data move. Fails (returns `false`)
+    /// rather than creating a dangling alias when the primary is unknown —
+    /// the caller (server.rs's `/account/alias` handler) turns that into a
+    /// 404, not a silent no-op.
+    pub fn add_alias(&self, alias: &str, primary: &str) -> bool {
+        let mut inner = self.inner.write();
+        if !inner.stores.contains_key(primary) {
+            return false;
+        }
+        inner.aliases.insert(alias.to_lowercase(), primary.to_string());
+        true
+    }
+
+    /// Drops one alias. Never removes the primary's own self-alias (the one
+    /// `insert` sets up) even if asked — that mapping is what makes the
+    /// account reachable at its own address at all, and losing it here would
+    /// be indistinguishable from `remove`'s full account deletion while
+    /// leaving the account's data behind.
+    pub fn remove_alias(&self, alias: &str, primary: &str) -> bool {
+        if alias.eq_ignore_ascii_case(primary) {
+            return false;
+        }
+        let mut inner = self.inner.write();
+        match inner.aliases.get(alias) {
+            Some(p) if p == primary => {
+                inner.aliases.remove(alias);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Every address currently routing to `primary`, aliases only — never
+    /// includes `primary` itself. This is what a client displays as "your
+    /// address" (PLANSCID.md's display-layer note: queried live rather than
+    /// trusted from a possibly-stale DID document).
+    pub fn aliases_for(&self, primary: &str) -> Vec<String> {
+        self.inner
+            .read()
+            .aliases
+            .iter()
+            .filter(|(alias, p)| p.as_str() == primary && alias.as_str() != primary)
+            .map(|(alias, _)| alias.clone())
+            .collect()
+    }
+
     pub fn get(&self, primary: &str) -> Option<std::sync::Arc<AccountStore>> {
         self.inner
             .read()
