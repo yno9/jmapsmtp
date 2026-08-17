@@ -296,7 +296,42 @@ impl Accounts {
             .collect()
     }
 
-    pub fn get(&self, primary: &str) -> Option<std::sync::Arc<AccountStore>> {
+    /// Atomically swaps one account's PRIMARY identity — the one-time
+  /// pre-SCID -> SCID migration (PLANSCID.md), never used for an ordinary
+  /// rename (that stays `add_alias`/`remove_alias`, no primary change at
+  /// all). Drops `old_primary`'s own entry, installs `new_account` (whose
+  /// `.email` becomes the new primary, with the self-alias `insert` always
+  /// sets up), re-points every alias that used to resolve to `old_primary`
+  /// at the new one instead — nothing that already worked stops working —
+  /// and adds `old_primary` itself as a fresh alias, since the entire point
+  /// of a migration is that the OLD address keeps delivering. One write
+  /// lock covers all of it, so no request can observe a half-migrated state
+  /// (the account entirely missing, or present under both names at once).
+  /// `false` when `old_primary` doesn't exist or `new_account.email` is
+  /// already in use — the caller's own directory-rename must be undone in
+  /// either case, since nothing here took effect.
+  pub fn migrate_primary(&self, old_primary: &str, new_account: AccountStore) -> bool {
+    let mut inner = self.inner.write();
+    if !inner.stores.contains_key(old_primary) {
+      return false;
+    }
+    let new_primary = new_account.email.clone();
+    if inner.stores.contains_key(&new_primary) {
+      return false;
+    }
+    inner.stores.remove(old_primary);
+    for v in inner.aliases.values_mut() {
+      if v == old_primary {
+        *v = new_primary.clone();
+      }
+    }
+    inner.aliases.insert(old_primary.to_string(), new_primary.clone());
+    inner.aliases.insert(new_primary.clone(), new_primary.clone());
+    inner.stores.insert(new_primary, std::sync::Arc::new(new_account));
+    true
+  }
+
+  pub fn get(&self, primary: &str) -> Option<std::sync::Arc<AccountStore>> {
         self.inner
             .read()
             .stores

@@ -692,6 +692,7 @@ async fn dispatch(
         "/admin/drain-anchor" => handlers::drain_anchor(&state, &req),
         "/account/delete" => handlers::account_delete(&state, &req),
         "/account/alias" => handlers::account_alias(&state, &req, &body),
+        "/account/migrate-to-scid" => handlers::account_migrate_to_scid(&state, &req, &body),
         "/account/storage/purge-messages" => handlers::storage_purge(&state, &req),
         "/admin/dashboard" => handlers::admin_dashboard(),
         "/metrics" => handlers::metrics(&state),
@@ -1820,6 +1821,111 @@ mod handlers {
             }
         })();
         set_route_cors(&mut res, "GET, POST, OPTIONS", "Authorization, Content-Type");
+        res
+    }
+
+    /// `POST /account/migrate-to-scid` — one-time move of an account already
+    /// on the pre-SCID (human-keyed) scheme onto SCID-primary
+    /// (PLANSCID.md). Never used for an ordinary rename (`/account/alias`
+    /// covers that, no primary change at all) — only for an account whose
+    /// login identity IS still its human name.
+    ///
+    /// The account directory is renamed WHOLESALE, not rebuilt: every
+    /// per-account file this relay keeps — `auth_token_hash`, device keys,
+    /// session tokens, `envelope.json`, stored messages, PGP keys — lives
+    /// inside it (`auth_env::account_dir`'s own doc), so the rename alone
+    /// carries all of it forward. In particular, this device's ALREADY-
+    /// VOUCHED device key needs no re-vouch: the file it's checked against
+    /// simply now lives under the new directory name, and the client's next
+    /// `/account/session` login (with the SCID as `username`) finds it
+    /// there unchanged.
+    pub fn account_migrate_to_scid(state: &Arc<RelayState>, req: &Request<()>, body: &[u8]) -> Response<Body> {
+        let mut res = (|| {
+            if req.method() != axum::http::Method::POST {
+                return method_not_allowed();
+            }
+            let Some((domain, localpart)) = authenticate(state, req) else {
+                return unauthorized();
+            };
+            #[derive(serde::Deserialize)]
+            struct MigrateRequest {
+                did: String,
+            }
+            let Ok(request) = serde_json::from_slice::<MigrateRequest>(body) else {
+                return text_error(400, "invalid JSON");
+            };
+            let Ok(webvh) = crate::webvh_id::parse(&request.did) else {
+                return text_error(400, "did does not read as biset's own did:webvh shape — nothing to migrate to");
+            };
+            let scid = webvh.scid.to_lowercase();
+            if scid.is_empty() || scid == localpart {
+                return text_error(409, "already SCID-primary, or the DID carries no usable SCID");
+            }
+
+            let old_dir = crate::auth_env::account_dir(&state.data_dir, &domain, &localpart);
+            let new_dir = crate::auth_env::account_dir(&state.data_dir, &domain, &scid);
+            if new_dir.exists() {
+                return text_error(409, "an account already exists at the target SCID");
+            }
+            if let Err(e) = std::fs::rename(&old_dir, &new_dir) {
+                return text_error(500, &format!("rename failed: {e}"));
+            }
+            // Re-opened fresh from the NEW path, not reused from the old
+            // AccountStore — a Store that still pointed at the pre-rename
+            // path would keep reading/writing a directory that no longer
+            // exists there, breaking every operation on this account until
+            // the next restart re-discovered it under its new name.
+            let store = match jmapserver::Store::open(&new_dir) {
+                Ok(s) => s,
+                Err(e) => {
+                    // Best-effort rollback: put it back so the account is
+                    // not left inaccessible under EITHER name.
+                    let _ = std::fs::rename(&new_dir, &old_dir);
+                    return text_error(500, &format!("reopening the migrated store failed: {e}"));
+                }
+            };
+            let new_email = format!("{scid}@{domain}");
+            let old_primary = format!("{localpart}@{domain}");
+            let migrated = state.accounts.migrate_primary(
+                &old_primary,
+                crate::handler::AccountStore {
+                    email: new_email.clone(),
+                    domain: domain.clone(),
+                    localpart: scid.clone(),
+                    dir: new_dir.clone(),
+                    store: Arc::new(store),
+                },
+            );
+            if !migrated {
+                let _ = std::fs::rename(&new_dir, &old_dir);
+                return text_error(500, "internal error: primary swap failed");
+            }
+            state.dyn_accounts.remove(&old_primary);
+            state.dyn_accounts.insert(new_email.clone());
+            // Hooks (Email/set create, EmailSubmission/set) hold an Arc back
+            // to the AccountStore they were installed on — the OLD one, now
+            // discarded. Without reinstalling here, sending mail from the
+            // migrated account would fail the same way a store opened
+            // without them always does (register_dyn_account's own note).
+            if let Some(account) = state.accounts.get(&new_email) {
+                crate::submit::install_hooks(state, &account);
+            }
+            // Persisted so a restart's scan (which rebuilds aliases from
+            // this file, not from memory) remembers the old name still
+            // delivers — same write `/account/alias`'s own POST does.
+            let current = state.accounts.aliases_for(&new_email);
+            if crate::auth_env::write_aliases(&state.data_dir, &domain, &scid, &current).is_err() {
+                eprintln!("[migrate-to-scid] alias list for {new_email} failed to persist — will not survive a restart");
+            }
+
+            let mut out = serde_json::Map::new();
+            out.insert("email".into(), new_email.into());
+            match jmap_types::go_json::to_vec(&serde_json::Value::Object(out)) {
+                Ok(b) => json_response(200, b),
+                Err(_) => text_error(500, "internal error"),
+            }
+        })();
+        set_route_cors(&mut res, "POST, OPTIONS", "Authorization, Content-Type");
         res
     }
 

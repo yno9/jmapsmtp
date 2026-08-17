@@ -90,6 +90,10 @@ const ALWAYS: &[RouteSpec] = &[
     // removes) — same shape as `/account/session` above, same reason
     // (gomux.rs's header).
     r("/account/alias", Guard::Account),
+    // One-time pre-SCID -> SCID-primary migration (PLANSCID.md) — never used
+    // for an ordinary rename (that's `/account/alias`), only for an account
+    // still on the old human-keyed scheme.
+    r("/account/migrate-to-scid", Guard::Account),
     r("/account/storage", Guard::Account),
     r("/account/storage/messages", Guard::Account),
     r("/account/storage/export", Guard::Account),

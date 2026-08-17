@@ -86,14 +86,15 @@ fn the_route_table_matches_the_oracle() {
     // `/account/session/challenge` is exempt: it is a genuinely NEW route
     // (SPEC.md §11.28's nonce half), not a port of anything the Go side
     // has — the whole reason a table of Go-side additions doesn't exist for
-    // it to be missing from. `/account/alias` (PLANSCID.md) is exempt for
-    // the same reason: the Go relay is retired and is not gaining new
-    // features, so this route legitimately has no oracle counterpart to
-    // diverge from.
+    // it to be missing from. `/account/alias` and `/account/migrate-to-scid`
+    // (PLANSCID.md) are exempt for the same reason: the Go relay is retired
+    // and is not gaining new features, so these routes legitimately have no
+    // oracle counterpart to diverge from.
     for spec in specs.iter().filter(|s| {
         !s.pattern.ends_with('/')
             && s.pattern != "/account/session/challenge"
             && s.pattern != "/account/alias"
+            && s.pattern != "/account/migrate-to-scid"
     }) {
         let (status, body, _) = o.get(spec.pattern);
         assert_ne!(
@@ -123,7 +124,7 @@ fn the_routes_this_port_omits_are_absent_from_the_oracle() {
     let cfg = rust_config(o.http_port);
     assert_eq!(
         route_specs(&cfg, false).len(),
-        if cfg!(feature = "anchor") { 33 } else { 31 },
+        if cfg!(feature = "anchor") { 34 } else { 32 },
         "the route table changed size — if a route was added or removed on \
          purpose, update this number in the same commit"
     );

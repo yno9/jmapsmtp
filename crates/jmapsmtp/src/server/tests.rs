@@ -1016,3 +1016,122 @@ fn req_with_auth(value: &str) -> Request<()> {
         .body(())
         .unwrap()
 }
+
+// ── SCID migration (PLANSCID.md) ────────────────────────────────────────────
+
+/// A pre-SCID (human-keyed) dynamic account, set up directly rather than
+/// through `/account/provision` — this test only cares about migrating an
+/// account that's already in this shape, not about how it got there.
+fn state_with_legacy_account() -> (Arc<RelayState>, String) {
+    use base64::Engine as _;
+    const TOKEN: &[u8] = b"legacy-unit-token-000000000000000";
+    let state = state();
+    crate::auth_env::write_auth_hash(
+        &state.data_dir,
+        "a.test",
+        "bob",
+        &jmapserver::hash_auth_token(TOKEN),
+    )
+    .unwrap();
+    state.register_dyn_account("bob", "a.test");
+    let password = base64::engine::general_purpose::STANDARD.encode(TOKEN);
+    let auth = base64::engine::general_purpose::STANDARD.encode(format!("bob@a.test:{password}"));
+    (state, auth)
+}
+
+#[tokio::test]
+async fn migrating_to_scid_renames_the_account_and_aliases_the_old_name() {
+    let (state, auth) = state_with_legacy_account();
+    let did = "did:webvh:QmMigrateTest1111111111111111111111111111111:a.test:bob";
+
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/account/migrate-to-scid")
+        .header(header::AUTHORIZATION, format!("Basic {auth}"))
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(serde_json::json!({ "did": did }).to_string()))
+        .unwrap();
+    let res = app(state.clone()).oneshot(req).await.unwrap();
+    let status = res.status().as_u16();
+    let body = String::from_utf8(
+        axum::body::to_bytes(res.into_body(), 1 << 20)
+            .await
+            .unwrap()
+            .to_vec(),
+    )
+    .unwrap();
+    assert_eq!(status, 200, "{body}");
+    let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(
+        parsed["email"], "qmmigratetest1111111111111111111111111111111@a.test",
+        "the caller is told its new SCID address"
+    );
+
+    // The directory itself moved, not just the in-memory table.
+    assert!(
+        !state.data_dir.join("a.test/bob").exists(),
+        "the old directory should be gone"
+    );
+    assert!(
+        state
+            .data_dir
+            .join("a.test/qmmigratetest1111111111111111111111111111111")
+            .exists(),
+        "the account now lives under its SCID"
+    );
+
+    // The old name still resolves — a fresh device-session login can still
+    // present it, exactly as `left-pane.ts`'s post-migration client flow
+    // relies on for anything still pointing at the old address.
+    assert_eq!(
+        state
+            .accounts
+            .resolve("bob@a.test")
+            .map(|a| a.email.clone()),
+        Some("qmmigratetest1111111111111111111111111111111@a.test".to_string())
+    );
+    assert!(
+        state
+            .accounts
+            .get("qmmigratetest1111111111111111111111111111111@a.test")
+            .is_some(),
+        "the new primary answers directly too"
+    );
+}
+
+/// A DID that isn't biset's own webvh shape has no SCID to migrate to — the
+/// account keeps working exactly as it was, not silently renamed to
+/// something meaningless.
+#[tokio::test]
+async fn migrating_with_a_non_webvh_did_is_refused_and_changes_nothing() {
+    let (state, auth) = state_with_legacy_account();
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/account/migrate-to-scid")
+        .header(header::AUTHORIZATION, format!("Basic {auth}"))
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(
+            serde_json::json!({ "did": "did:dht:something" }).to_string(),
+        ))
+        .unwrap();
+    let res = app(state.clone()).oneshot(req).await.unwrap();
+    assert_eq!(res.status().as_u16(), 400);
+    assert!(state.data_dir.join("a.test/bob").exists(), "untouched");
+    assert!(state.accounts.get("bob@a.test").is_some());
+}
+
+#[tokio::test]
+async fn migrating_without_a_credential_is_unauthorized() {
+    let (state, _auth) = state_with_legacy_account();
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/account/migrate-to-scid")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(
+            serde_json::json!({ "did": "did:webvh:QmX:a.test:bob" }).to_string(),
+        ))
+        .unwrap();
+    let res = app(state.clone()).oneshot(req).await.unwrap();
+    assert_eq!(res.status().as_u16(), 401);
+    assert!(state.data_dir.join("a.test/bob").exists(), "untouched");
+}
