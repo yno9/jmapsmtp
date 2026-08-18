@@ -25,6 +25,20 @@
 //! anchor can resolve one. An anchorless relay therefore **cannot** create a
 //! `did:webvh` account, and says so rather than pretending.
 //!
+//! # Two levels (ARC.md §2.9, landed 2026-08-18)
+//!
+//! What this module decides is **Lv1 only** — creating `scid@domain`, keyed
+//! by `did::scid_localpart`'s projection of the DID's own SCID, never by a
+//! human-chosen name. Lv1 needs no non-duplication registry of its own: the
+//! SCID localpart already cannot collide with anyone else's (ARC.md §2.1),
+//! so [`may_provision`]'s three modes are purely an operator's OWN discretion
+//! over who may create an account here at all, not a mechanism protecting
+//! against a name collision the way the pre-2026-08-18 design's
+//! `authorized_did_domain` did. The human-readable `username@domain` alias
+//! (Lv2) is never decided here — it is computed and kept current entirely by
+//! `did::alias_reconcile`, continuously, from whatever the DID's current
+//! did:webvh document actually says.
+//!
 //! This module is the decision logic with no HTTP and no I/O in it, so every
 //! branch below is reachable from a test.
 
@@ -87,15 +101,13 @@ pub enum Refusal {
     /// [`Refusal::DeviceVouchRejected`] because the client can act on it: the
     /// vouch was fine, the *relay* cannot check it.
     DidMethodNeedsAnchor,
-    /// The domain accepts identities from a list of `did:webvh` home domains
-    /// and this DID is not rooted at one of them.
+    /// `DomainConfig::authorized_did_domain` is set and this DID's did:webvh
+    /// document does not currently live on any domain this relay administers
+    /// (ARC.md §2.9) — Lv1 itself is refused, not just the Lv2 alias.
     DidDomainNotAuthorized,
-    /// The DID is rooted at an authorized domain, but is asking for a
-    /// localpart other than its own name. See [`did_domain_gate`].
-    DidUsernameMismatch,
     /// The DID could not be read as a `did:webvh` identifier at all, on a
-    /// domain that admits identities by their home domain — so there is no
-    /// home domain to check. Separate from the two above because it is a
+    /// domain that gates Lv1 by home-domain membership — so there is no
+    /// domain to check. Separate from the one above because it is a
     /// malformed request rather than a refused one.
     DidNotReadable,
 }
@@ -110,10 +122,9 @@ impl Refusal {
             | Refusal::DidSigRequired
             | Refusal::UnknownDomain => 400,
             Refusal::DidNotReadable => 400,
-            Refusal::NotAvailable
-            | Refusal::DomainNotOpen
-            | Refusal::DidDomainNotAuthorized
-            | Refusal::DidUsernameMismatch => 403,
+            Refusal::NotAvailable | Refusal::DomainNotOpen | Refusal::DidDomainNotAuthorized => {
+                403
+            }
             Refusal::DidBindingRejected
             | Refusal::DeviceVouchRejected
             | Refusal::DidMethodNeedsAnchor => 401,
@@ -133,9 +144,8 @@ impl Refusal {
             Refusal::DomainNotOpen => "domain not open for provisioning",
             Refusal::DidNotReadable => "did is not a readable did:webvh identifier",
             Refusal::DidDomainNotAuthorized => {
-                "this domain does not accept identities from that did's domain"
+                "this domain only accepts identities whose did:webvh document already lives on a domain this relay administers"
             }
-            Refusal::DidUsernameMismatch => "username must match the did's own name",
             Refusal::UsernameTaken => "username taken",
             Refusal::DidBindingRejected => "did binding rejected",
             Refusal::IdentityOwnedByAnother => "identity owned by a different key",
@@ -193,72 +203,52 @@ pub fn resolve_domain(
     Ok((domain.to_string(), dom_cfg))
 }
 
-/// The `authorized_did_domain` mode: admit an identity by where it lives, and
-/// hold it to its own name.
-///
-/// # 1:1 is what removes the need for a claim registry
-///
-/// Because a mail domain names AT MOST ONE did-domain, non-duplication needs
-/// no registry at all here: the `did:webvh` log store's own append-only-per-
-/// (domain,username) shape already refuses to let a second identity overwrite
-/// a name's log, and with only one did-domain in play that IS the whole
-/// non-duplication guarantee. A list-of-many would reopen the gap — two
-/// did-domains sharing this mail domain could both mint an `alice`, and only
-/// a separate first-come registry could say which one actually holds
-/// `alice@here` — which is exactly why this field is one value, not a list.
-///
-/// # The username is not negotiable
-///
-/// A DID rooted at the authorized domain gets **its own localpart and no
-/// other**. `did:webvh:…:example.org:alice` may have `alice@here`, never
-/// `bob@here`, and if `alice@here` is already somebody else's it gets nothing —
-/// there is no fallback name to offer.
-///
-/// # Comparison is exact
-///
-/// `username` arrives already trimmed and lowercased (see [`validate`]), and
-/// the DID's own segment is compared as it appears. A DID whose path segment is
-/// `Alice` therefore matches nothing this relay will accept, which is correct:
-/// its log lives at `/Alice/did.jsonl`, a different document from `/alice/`,
-/// and folding the two together here would authorise a name against a log that
-/// does not carry it.
-pub fn did_domain_gate(dom_cfg: &DomainConfig, did: &str, username: &str) -> Result<(), Refusal> {
-    let Some(authorized) = &dom_cfg.authorized_did_domain else {
-        return Err(Refusal::DidDomainNotAuthorized);
-    };
+/// The `authorized_did_domain` mode (ARC.md §2.9): admit an identity to Lv1
+/// itself only when its did:webvh document's CURRENT domain is already one
+/// this relay administers — the same membership test
+/// `did::alias_reconcile::desired_alias` runs continuously to decide the Lv2
+/// alias, reused here as a creation gate. Unlike the old (pre-2026-08-18)
+/// version of this mode, there is no username to compare: Lv1's localpart is
+/// always the SCID projection (`did::scid_localpart`), never a submitted
+/// name, so a DID rooted at an administered domain is simply admitted,
+/// full stop — there is no "wrong name" refusal left to make.
+pub fn did_domain_gate(cfg: &Config, did: &str) -> Result<(), Refusal> {
     let id = crate::did::webvh_id::parse(did).map_err(|_| Refusal::DidNotReadable)?;
-    if !authorized.eq_ignore_ascii_case(&id.domain) {
-        return Err(Refusal::DidDomainNotAuthorized);
+    if cfg.domains.contains_key(&id.domain) {
+        Ok(())
+    } else {
+        Err(Refusal::DidDomainNotAuthorized)
     }
-    if id.username != username {
-        return Err(Refusal::DidUsernameMismatch);
-    }
-    Ok(())
 }
 
-/// Whether this request may create an account on this domain.
+/// Whether this request may create `scid@domain` (Lv1) on this domain.
 ///
-/// Three modes, checked in order of strictness rather than convenience:
+/// Lv1 is unconditional by design (ARC.md §2.9: a valid did:webvh signature
+/// is already sufficient, since the SCID localpart cannot collide with
+/// anyone else's) — the three checks below are exclusively an OPERATOR'S OWN
+/// discretion to narrow that, not a non-duplication mechanism the way the
+/// old three-mode design needed. Checked in order of strictness:
 ///
-/// 1. `authorized_did_domain` — admits identities rooted at exactly one named
-///    home domain. When set it is the **only** thing consulted: an operator
-///    who has named the domain they trust has said something more specific
-///    than "open", and letting `allow_provision` also be true would silently
-///    discard it.
-/// 2. `allow_provision` — open to anyone.
-/// 3. `provision_secret` — open to anyone holding the string. An empty secret
-///    must never match an empty submitted one.
+/// 1. `authorized_did_domain` — when set, Lv1 itself is refused unless the
+///    identity's did:webvh document already lives on a domain this relay
+///    administers ([`did_domain_gate`]). The **only** thing consulted when
+///    set: an operator who opted into this said something more specific
+///    than "open", and letting `allow_provision` also be true would
+///    silently discard it.
+/// 2. `allow_provision` — open to anyone with a valid signature.
+/// 3. `provision_secret` — open to anyone holding the string. An empty
+///    secret must never match an empty submitted one.
 ///
-/// A domain with none of the three is not creatable at all, which is how a
-/// privileged domain is configured on purpose.
+/// A domain with none of the three set is not creatable at all, which is
+/// how a privileged domain is configured on purpose.
 pub fn may_provision(
+    cfg: &Config,
     dom_cfg: &DomainConfig,
     did: &str,
-    username: &str,
     submitted_secret: &str,
 ) -> Result<(), Refusal> {
-    if dom_cfg.authorized_did_domain.is_some() {
-        return did_domain_gate(dom_cfg, did, username);
+    if dom_cfg.authorized_did_domain {
+        return did_domain_gate(cfg, did);
     }
     if dom_cfg.allow_provision {
         return Ok(());

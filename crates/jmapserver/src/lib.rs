@@ -10,6 +10,7 @@
 pub mod activity;
 pub mod admin;
 pub mod authtoken;
+pub mod base58;
 pub mod contacts;
 pub mod did;
 pub mod dispatch;

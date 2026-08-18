@@ -136,8 +136,7 @@ fn our_status(cfg: &Config, req: &ProvisionRequest) -> u16 {
         Ok(v) => v,
         Err(r) => return r.status(),
     };
-    let username = req.username.trim().to_lowercase();
-    if let Err(r) = may_provision(&dom_cfg, &req.did, &username, &req.provision_secret) {
+    if let Err(r) = may_provision(cfg, &dom_cfg, &req.did, &req.provision_secret) {
         return r.status();
     }
     match vouch_path(cfg, &req.did) {

@@ -15,32 +15,62 @@ fn resolved(username: Option<&str>, domain: Option<&str>) -> AliasLookup {
     }
 }
 
+/// A relay administering two domains — `desired_alias`'s job is membership
+/// in this whole set, never just one of them.
+fn cfg(json: &str) -> Config {
+    serde_json::from_str(json).expect("config should parse")
+}
+fn administering(domains: &[&str]) -> Config {
+    let doms: std::collections::BTreeMap<&str, serde_json::Value> =
+        domains.iter().map(|d| (*d, serde_json::json!({}))).collect();
+    cfg(&serde_json::json!({ "domain": doms }).to_string())
+}
+
 // ── desired_alias ────────────────────────────────────────────────────────
 
 #[test]
 fn a_did_currently_on_this_domain_names_its_alias() {
     assert_eq!(
-        desired_alias("a.test", &resolved(Some("y"), Some("a.test"))),
+        desired_alias(&administering(&["a.test"]), &resolved(Some("y"), Some("a.test"))),
         Some("y@a.test".to_string())
     );
 }
 
-/// User-decided (2026-08-18): a DID whose did:webvh location moved to a
-/// DIFFERENT domain gets no alias on this relay at all, even though its mail
-/// account (the immutable scid@domain primary) is untouched.
+/// User-decided (2026-08-18): a DID whose did:webvh location is on a domain
+/// this relay does not administer AT ALL gets no alias here, even though its
+/// mail account (the immutable scid@domain primary) is untouched.
 #[test]
-fn a_did_now_elsewhere_gets_no_alias_here() {
+fn a_did_on_an_unadministered_domain_gets_no_alias_here() {
     assert_eq!(
-        desired_alias("a.test", &resolved(Some("y"), Some("b.test"))),
+        desired_alias(&administering(&["a.test"]), &resolved(Some("y"), Some("b.test"))),
         None
     );
 }
 
+/// ARC.md §2.9: a relay administering MULTIPLE domains grants the alias on
+/// whichever one the DID's current location actually names — even when that
+/// is NOT the domain the primary being reconciled happens to sit under. This
+/// is the whole reason `desired_alias` takes the full `Config`, not one
+/// domain string.
+#[test]
+fn a_did_on_any_administered_domain_gets_its_alias_there() {
+    let cfg = administering(&["a.test", "b.test"]);
+    assert_eq!(
+        desired_alias(&cfg, &resolved(Some("y"), Some("a.test"))),
+        Some("y@a.test".to_string())
+    );
+    assert_eq!(
+        desired_alias(&cfg, &resolved(Some("y"), Some("b.test"))),
+        Some("y@b.test".to_string()),
+        "b.test is administered too, even if the primary being reconciled sits on a.test"
+    );
+}
+
 /// Deactivated — `Resolved` with both fields `None` — means the same as
-/// "moved elsewhere": nothing here belongs to it any more.
+/// "on an unadministered domain": nothing here belongs to it any more.
 #[test]
 fn a_deactivated_did_wants_no_alias() {
-    assert_eq!(desired_alias("a.test", &resolved(None, None)), None);
+    assert_eq!(desired_alias(&administering(&["a.test"]), &resolved(None, None)), None);
 }
 
 // ── plan ────────────────────────────────────────────────────────────────

@@ -23,10 +23,10 @@
       }
     },
     "biset.md": {
-      "authorized_did_domain": "biset.md"
+      "authorized_did_domain": true
     },
     "t.biset.md": {
-      "authorized_did_domain": "t.biset.md"
+      "authorized_did_domain": true
     }
   }
 }

@@ -124,7 +124,7 @@ pub fn registered_domain_config(cfg: &Config, domain: &str) -> DomainConfig {
         accounts: Default::default(),
         allow_provision: false,
         provision_secret: provision_secret_for(cfg, domain),
-        authorized_did_domain: None,
+        authorized_did_domain: false,
     }
 }
 

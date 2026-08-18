@@ -216,7 +216,7 @@ fn a_registered_domain_is_gated_and_the_oracle_reads_it_that_way() {
     assert!(!loaded.allow_provision);
     assert_eq!(loaded.provision_secret, dc.provision_secret);
     assert_eq!(
-        jmapsmtp::did::provision::may_provision(&loaded, "", "", ""),
+        jmapsmtp::did::provision::may_provision(&jmapsmtp::config::Config::default(), &loaded, "", ""),
         Err(jmapsmtp::did::provision::Refusal::DomainNotOpen),
         "a BYO domain never becomes open"
     );

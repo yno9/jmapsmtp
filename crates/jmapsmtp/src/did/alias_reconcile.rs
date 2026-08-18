@@ -21,13 +21,19 @@
 //! # What "reconciled" means
 //!
 //! For each SCID-primary account, the desired alias set is exactly ONE
-//! address: whatever [`jmapserver::did::anchor::current_alias`] reports as the
-//! bound DID's current username, on the condition that DID's current
-//! did:webvh location is on THIS relay's own domain (2026-08-18,
-//! user-decided — a DID whose location moved elsewhere gets NO alias here,
-//! even though its mail account remains; the immutable SCID address is
-//! untouched either way). Anything else present is removed; the one desired
-//! address is added if missing.
+//! address: whatever [`jmapserver::did::anchor::current_alias`] reports as
+//! the bound DID's current username, on the condition that DID's current
+//! did:webvh location is a domain THIS relay administers — ANY domain in
+//! `config.domains` (ARC.md §2.9's Lv2, 2026-08-18), not only the ONE domain
+//! the primary being reconciled happens to sit under. A relay administering
+//! `alice.md` and `bob.md` may reconcile a primary filed as `scid@alice.md`
+//! into an alias on `bob.md` instead, if that is where the DID's document
+//! currently lives — Lv1 (§2.9) no longer requires a primary's own domain to
+//! have anything to do with where its DID actually lives, so the alias check
+//! can't either. A DID whose current location is on neither gets NO alias
+//! here at all, even though its mail account remains; the immutable SCID
+//! address is untouched either way. Anything else present is removed; the
+//! one desired address is added if missing.
 //!
 //! # Failure is silence, not deletion
 //!
@@ -39,6 +45,7 @@
 //! never look like every renamed identity abandoning its address at once.
 use std::sync::Arc;
 
+use crate::config::Config;
 use crate::server::RelayState;
 use jmapserver::did::anchor::AliasLookup;
 
@@ -68,13 +75,18 @@ pub fn spawn_alias_reconcile(state: Arc<RelayState>) {
     });
 }
 
-/// The one alias `localpart@domain` should have, or `None` (deactivated, or
-/// its did:webvh location moved off `domain` entirely — either way, no
-/// address here belongs to it any more).
+/// The one alias a SCID-primary account should have, or `None` (deactivated,
+/// or its did:webvh location is on a domain this relay does not administer
+/// at all — either way, no address here belongs to it any more).
 ///
 /// Pure — no I/O, no `RelayState` — so this, the actual policy, is
 /// unit-testable directly; [`reconcile_aliases`] is a thin loop applying it.
-fn desired_alias(domain: &str, lookup: &AliasLookup) -> Option<String> {
+/// Takes the whole `Config`, not one domain: the check is membership in
+/// EVERY domain this relay administers (`config.domains`), never just the
+/// domain the primary being reconciled happens to sit under — see this
+/// module's own header for why that distinction matters under Lv1's
+/// "anywhere" rule.
+fn desired_alias(cfg: &Config, lookup: &AliasLookup) -> Option<String> {
     match lookup {
         AliasLookup::NotBound | AliasLookup::Unknown => {
             unreachable!("callers must skip NotBound/Unknown before asking for a desired alias — see reconcile_aliases")
@@ -82,7 +94,7 @@ fn desired_alias(domain: &str, lookup: &AliasLookup) -> Option<String> {
         AliasLookup::Resolved {
             username: Some(u),
             domain: Some(d),
-        } if d == domain => Some(format!("{u}@{d}")),
+        } if cfg.domains.contains_key(d) => Some(format!("{u}@{d}")),
         AliasLookup::Resolved { .. } => None,
     }
 }
@@ -118,7 +130,7 @@ pub fn reconcile_aliases(state: &RelayState) {
         if matches!(lookup, AliasLookup::NotBound | AliasLookup::Unknown) {
             continue;
         }
-        let desired = desired_alias(domain, &lookup);
+        let desired = desired_alias(&state.cfg, &lookup);
         let current = state.accounts.aliases_for(&primary);
         let (remove, add) = plan(&current, desired.as_deref());
         if remove.is_empty() && add.is_none() {

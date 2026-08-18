@@ -37,6 +37,10 @@ pub mod bind;
 pub mod devices;
 /// Who may create an account, and the DID vouch every creation requires.
 pub mod provision;
+/// The case-insensitive-safe, reversible SCID<->localpart projection
+/// (ARC.md §2.9) — see its own header for why the SCID can't just be
+/// lowercased.
+pub mod scid_localpart;
 /// Reading a `did:webvh` identifier's own segments, for `provision`'s
 /// `authorized_did_domain` policy check.
 pub mod webvh_id;

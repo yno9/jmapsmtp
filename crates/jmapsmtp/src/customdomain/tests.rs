@@ -171,16 +171,17 @@ fn registering_a_domain_never_opens_it_for_everyone() {
     assert_eq!(dc.selector(), crate::dkim::DEFAULT_SELECTOR);
 
     // And the gate actually holds.
+    let secret = dc.provision_secret.clone();
     assert_eq!(
-        crate::did::provision::may_provision(&dc, "", "", &dc.provision_secret),
+        crate::did::provision::may_provision(&Config::default(), &dc, "", &secret),
         Ok(())
     );
     assert_eq!(
-        crate::did::provision::may_provision(&dc, "", "", ""),
+        crate::did::provision::may_provision(&Config::default(), &dc, "", ""),
         Err(crate::did::provision::Refusal::DomainNotOpen)
     );
     assert_eq!(
-        crate::did::provision::may_provision(&dc, "", "", "guessed"),
+        crate::did::provision::may_provision(&Config::default(), &dc, "", "guessed"),
         Err(crate::did::provision::Refusal::DomainNotOpen)
     );
 }

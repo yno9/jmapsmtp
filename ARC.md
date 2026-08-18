@@ -113,54 +113,25 @@ production incident `gomux.rs`'s header describes.
 (`did/provision.rs::may_provision`) because each is a stronger, more specific
 statement than the one after it:
 
-1. **`authorized_did_domain`** — admits identities by where their `did:webvh`
-   is rooted, and holds them to their own name: `did:webvh:{scid}:{that
-   domain}:{username}` may have `{username}@{this mail domain}`, nothing
-   else. The check is a string parse and two comparisons
-   (`did/webvh_id.rs`/`did_domain_gate`) — no anchor round trip, no network. When
-   set, it is the **only** thing consulted: an operator who named a domain
-   they trust said something more specific than "open", and letting
-   `allow_provision` also be true would silently discard that.
+1. **`authorized_did_domain`** (`bool`) — gates account creation itself on
+   Lv2's own condition (§2.9): admitted only if the identity's did:webvh
+   document already lives on a domain THIS relay administers (any member of
+   `config.domains`). The check is a string parse plus a map lookup
+   (`did/webvh_id.rs`/`did/provision.rs::did_domain_gate`) — no anchor round
+   trip, no network. When set, it is the **only** thing consulted: an
+   operator who opted into this said something more specific than "open",
+   and letting `allow_provision` also be true would silently discard that.
 
-   **It is `Option<String>`, never `Vec<String>`.** A mail domain names AT
-   MOST ONE did-domain. This is not a limitation worked around elsewhere — it
-   is what makes the mode need no separate claim registry: with exactly one
-   did-domain per mail domain, the `did:webvh` log store's own
-   append-only-per-(domain,username) shape already IS the non-duplication
-   guarantee (one log per name, first writer wins). A list of N did-domains
-   sharing one mail domain would reopen the gap a registry exists to close —
-   two different did-domains could both mint an `alice`, and something would
-   have to decide, first-come, which `alice@here` actually is. Pinning 1:1 is
-   what lets that something be "nothing" instead of a new stateful service.
-
-   Configured as an explicit pair per mail domain — `config.example.json`:
-
-   ```json
-   "domain": {
-     "biset.md":   { "authorized_did_domain": "biset.md" },
-     "t.biset.md": { "authorized_did_domain": "t.biset.md" }
-   }
-   ```
-
-   **The relay's own domain is not implicit.** `biset.md` admits `biset.md`
-   identities because it says so, same value on both sides — there is one
-   rule, and "my own domain" is not a special case of it. A future
-   third-party domain — some operator's `example.com` identities landing on
-   this relay's `example.biset.md` — is the identical shape, one more pair,
-   not a different code path
-   (`the_relays_own_domain_is_not_implicitly_authorized`,
-   `an_identity_from_the_named_domain_may_have_its_own_name` in
-   `provision/tests.rs`).
-
-   That third-party case is not yet reachable end to end: this relay resolves
-   `did:webvh` documents by asking its own anchor (§2.7), and the anchor today
-   only serves logs it hosts itself. A pair naming a domain the anchor does
-   not host cannot be verified — `authorized_did_domain` will accept the
-   config, but every provision against it fails at the anchor's resolve, not
-   silently. Making that case real needs the anchor to resolve an ARBITRARY
-   did-domain's log over HTTPS (not just its own store), which needs its own
-   SSRF posture before it is safe to point at operator-supplied domains —
-   tracked, not yet built.
+   **Was `Option<String>`, naming exactly one trusted did-domain, before
+   2026-08-18.** §2.9 explains why that mode's whole non-duplication
+   argument stopped applying once accounts are keyed by the SCID projection
+   rather than a human name — nothing is left for a single named
+   did-domain to protect that domain-set membership doesn't already cover.
+   Third-party did-domain trust (a mail domain vouching for identities
+   rooted at a DIFFERENT operator's domain) went with it: every check is
+   now against this relay's own administered set, never an arbitrary named
+   domain, so there is no case left where resolving a foreign operator's log
+   would even be attempted.
 
 2. **`allow_provision`** — open to anyone.
 3. **`provision_secret`** — open to anyone holding the string. An empty
@@ -208,9 +179,9 @@ knew about DIDs binds one on next login, rather than never getting one.
   had neither done nor could do; the caller treating the call as best-effort
   was never license to lie to it.
 
-The anchor is the one that judges the proof (§2.7's `verify_binding`/`claim`)
-— this relay only carries it, same "decide who to ask, not whether they're
-good" split as §2.1.
+The anchor is the one that judges the proof (§2.7's `claim`) — this relay
+only carries it, same "decide who to ask, not whether they're good" split as
+§2.1.
 
 ### 2.5 What "an account exists" means
 
@@ -259,12 +230,14 @@ with nothing to clean it up.
 
 `did/alias_reconcile.rs` is the backstop, on the same cadence as §5's inactive
 sweep: for every SCID-primary account it asks the anchor
-(`jmapserver::anchor::current_alias`, §2.7) what the bound DID currently
+(`jmapserver::did::anchor::current_alias`, §2.7) what the bound DID currently
 claims, and reconciles the local alias set to match exactly — one address if
-the DID's current location is on this relay's own domain, none otherwise
-(deactivated, or moved to a domain this relay doesn't serve). A `NotBound` or
-`Unknown` answer changes nothing that cycle — an anchor outage must never look
-like every renamed identity abandoning its address at once.
+the DID's current location is a domain THIS relay administers (any member of
+`config.domains`, not only the domain the primary being reconciled happens to
+sit under — §2.9), none otherwise (deactivated, or on a domain this relay
+doesn't serve at all). A `NotBound` or `Unknown` answer changes nothing that
+cycle — an anchor outage must never look like every renamed identity
+abandoning its address at once.
 
 The anchor side of this is `ClaimStore.rebind` (biset's
 `src/anchor/store.ts`, not this repo): the DID string the anchor recorded at
@@ -285,7 +258,7 @@ run it.
 | Function | Asks the anchor to… |
 |---|---|
 | `claim` | record which DID owns `localpart@domain` (§2.3, §2.4) |
-| `verify_binding` | verify a proof WITHOUT recording a claim — `authorized_did_domain`'s counterpart to `claim`, since that mode's own non-duplication guarantee makes a registry entry redundant |
+| `verify_binding` | verify a proof WITHOUT recording a claim — the old (pre-2026-08-18) `authorized_did_domain` mode's counterpart to `claim`, from when that mode's non-duplication argument made a registry entry redundant. Unused by anything in this relay since §2.9 landed: every Lv1 claim needs a registry entry now, for `did::alias_reconcile` to find later — kept in the anchor client for a caller that still wants the no-registry shape, not because this relay calls it |
 | `vouch_device` | check whether a DID's *current* root key authorises a device (§2.2) |
 | `release`/`release_ok` | forget a claim, so the name can be provisioned again |
 | `current_alias` | what a bound DID currently claims as its address (§2.6) |
@@ -315,6 +288,107 @@ table, this surface's routes among them:
 | `GET`/`POST /account/alias` | `Account` | scoped to the authenticated account only — the target primary never comes from the body (§2.6) |
 | `POST /account/migrate-to-scid` | `Account` | a one-time move onto SCID-primary, never an ordinary rename (that's `/account/alias`) |
 | `POST /account/delete` | `Account` | routing (the alias table) is dropped before the account's data, so a partial failure never leaves aliases pointing at data that's gone |
+
+### 2.9 Many relays, one SCID, two provisioning levels
+
+**Landed 2026-08-18.** §2.3 and §2.6 already describe the result; this
+subsection is the design behind it — why Lv1/Lv2 are split the way they are,
+and the reasoning §2.3/§2.6's own prose leans on. It applies once the
+single-relay picture (one `biset.md`, one `t.biset.md`) becomes many
+independently-operated relays — `biset.md`, `alice.md`, `bob.md`, each its
+own process, its own `config.json`, its own anchor — but needs no such
+deployment to already be true today: a single relay administering one domain
+is just the N=1 case of everything below.
+
+**The picture.** One identity (one SCID) can hold an account on any number of
+these relays at once — `scid@biset.md`, `scid@alice.md`, `scid@bob.md` are
+meant to be genuinely INDEPENDENT mailboxes, not aliases of one another and
+not kept in sync with each other. Nothing here proposes cross-relay mail
+sync; each relay's `Accounts` stays exactly as self-contained as it is today
+(§2.6). Reaching that picture safely means answering two questions this
+subsection answers: who may create `scid@domain` at all, and who gets the
+pretty `username@domain` on top of it.
+
+**Two levels, not one flat gate:**
+
+- **Lv1 — `scid@domain`, unconditional.** Any did:webvh identity presenting a
+  valid signature may provision this on ANY relay, regardless of where its
+  own did:webvh document actually lives. This is safe specifically because
+  the localpart is already globally unique on its own (§2.1: a SCID collision
+  needs a SHA-256-class break) — there is nothing left for a domain-scoped
+  registry to protect against, unlike a human-chosen name. `§2.3`'s
+  `authorized_did_domain` non-duplication argument has no work to do at this
+  level: nobody but the key-holder can ever produce a valid signature for a
+  given SCID, so first-come is already safe with no registry at all.
+- **Lv2 — `username@domain`, gated.** Granted — and kept current by the exact
+  same mechanism §2.6 already runs — only when the identity's CURRENT
+  did:webvh location's domain is a member of `config.domains`: every domain
+  THIS relay administers, unconditionally (deliberately not narrowed to a
+  curated subset, 2026-08-18 — an operator wanting to exclude one of its own
+  domains from this is not yet a case this design serves). This generalizes
+  §2.6's `desired_alias`, which today compares against only the ONE domain
+  the primary being reconciled happens to sit under
+  (`primary.split_once('@')`'s own domain) — under Lv1's "anywhere" rule, a
+  primary filed as `scid@alice.md` whose DID currently resolves to `bob.md`
+  (also administered by this same relay process) should still get
+  `y@bob.md`, not nothing, so the check has to become membership in the
+  WHOLE administered domain set, not equality against one.
+
+`authorized_did_domain`'s remaining job shrinks to exactly Lv2's gate — it
+stops being a provisioning-creation gate at all, since Lv1 needs none. That
+also retires `did_domain_gate`'s username-equality check: there is no
+submitted `username` left to compare against the DID's own path segment,
+because Lv2's alias is always exactly whatever the DID's own current
+identifier already names, never a request parameter.
+
+**Case folding: the localpart cannot be the SCID merely lowercased.** A
+`did:webvh` SCID is base58btc (§2.1); of its 58 symbols, 46 pair up across
+case (`A`/`a`, `B`/`b`, …), so a 46-character SCID has on the order of 36–37
+case-ambiguous positions. Folding case collapses roughly 2^36–37 distinct,
+independently valid SCIDs onto one lowercase string — a birthday collision
+becomes reachable at a few hundred thousand registered identities, nowhere
+near SHA-256's actual ~2^128-class collision resistance. At the scale this
+many-relays picture implies, that gap is not theoretical.
+
+The fix is a lossless, case-insensitive-safe RE-ENCODING of the same 34 raw
+bytes (did:webvh's SCID is a base58-encoded multihash: a 2-byte SHA-256
+multihash prefix plus the 32-byte digest, `multihash.ts`), not a fold:
+
+```
+localpart = zbase32_encode( base58_decode(scid) )
+scid      = base58_encode( zbase32_decode(localpart, 34) )
+```
+
+`zbase32` already exists both directions (`crates/jmapserver/src/zbase32.rs`,
+built for WKD) — the one new piece on the Rust side is a base58 DECODER
+(`did/webvh_id.rs`'s own stance has always been to treat the SCID as an
+opaque string; this is a deliberate, narrow exception to that, not a
+reversal of it). biset's client already decodes base58 (`@scure/base`); a
+matching zbase32 encode/decode needs porting there too, so a client can
+compute its own resulting address without asking the relay.
+
+Reversibility (decode, not merely hash) is deliberate: `localpart@domain`
+recovers the SCID for free, no registry lookup needed for that half. It does
+NOT by itself resolve the identity's did:webvh document — unlike `did:key`,
+a `did:webvh` SCID carries no location information on its own, so reaching
+the actual document still needs exactly one registry step after that:
+ask the anchor's claim registry where that SCID's did:webvh log currently
+lives (`lookupByDid`, store.ts).
+
+**Where it lives**: `did/scid_localpart.rs` (the projection, both
+directions), `jmapserver::base58` (the new decoder, alongside
+`jmapserver::zbase32` — neither under `did/`, same reasoning as §2's own
+header: an encoding is not a DID method), `did/provision.rs::may_provision`
+(Lv1's admission modes, `authorized_did_domain` now `bool`),
+`did/alias_reconcile.rs::desired_alias` (Lv2, domain-set membership), and
+biset's `src/did/webvh/zbase32.ts` / `scid-localpart.ts` (the client-side
+port, byte-for-byte agreement confirmed against the Rust side on a real
+SCID). `server.rs::account_provision` always `claim`s now, keyed by the SCID
+projection rather than the submitted username — the old
+`authorized_did_domain` mode's no-registry `verify_binding` shortcut (§2.7)
+is retired from this path, since `did::alias_reconcile` has to find every
+Lv1 claim in the registry afterward, continuously, not just verify it once
+at creation.
 
 ---
 

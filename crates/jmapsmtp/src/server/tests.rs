@@ -444,11 +444,21 @@ fn anchored_state(replies: Vec<(u16, &str)>) -> (Arc<RelayState>, Arc<ScriptedAn
     (state, transport)
 }
 
+/// A real (decodable, 34-byte) SCID, so `did::scid_localpart::to_localpart`
+/// actually succeeds and the account is filed by it — unlike the
+/// placeholder `QmSCID111...1`-style strings used elsewhere in this file
+/// for tests that don't care about the resulting localpart, which contain
+/// characters outside base58's alphabet and so would exercise the "did not
+/// read as biset's own did:webvh shape" fallback to the submitted username
+/// instead.
+const REAL_SCID: &str = "QmWpmYGewT1KjvvugqN7SDpTQzLEP2Z9CcDSXXdHtsD5t8";
+const REAL_SCID_LOCALPART: &str = "neo8hrm5gkrw5ckchtu9h11z3nk558aq8p1yksw3worpw689dbh9rbe";
+
 #[cfg(feature = "anchor")]
 fn webvh_provision() -> String {
     serde_json::json!({
         "username": "carol", "domain": "open.test",
-        "did": "did:webvh:QmSCID111111111111111111111111111111111111111:biset.md:carol",
+        "did": format!("did:webvh:{REAL_SCID}:biset.md:carol"),
         "did_sig": "c2ln", "bind_ts": 1_785_000_000i64,
         "device_pub_key": "DEVKEY", "device_label": "Laptop",
         "device_vouch_ts": 1_785_000_000i64, "device_vouch_sig": "c2ln",
@@ -485,7 +495,7 @@ async fn an_anchored_provision_claims_then_vouches_then_writes_the_device() {
     let seen = anchor.seen.lock().clone();
     assert_eq!(seen.len(), 2, "one claim, one vouch");
     assert!(
-        seen[0].starts_with("https://anchor.test/_anchor/identity/carol"),
+        seen[0].starts_with(&format!("https://anchor.test/_anchor/identity/{REAL_SCID_LOCALPART}")),
         "{}",
         seen[0]
     );
@@ -503,15 +513,12 @@ async fn an_anchored_provision_claims_then_vouches_then_writes_the_device() {
         seen[0]
     );
 
-    // Filed under the DID's SCID, not the human name "carol" — SCID-primary
-    // accounts (PLANSCID.md): the account itself is keyed by the permanent
-    // SCID segment, and "carol" becomes a delivery alias instead (checked
-    // below), so a later username change is never a directory move.
-    let acct = crate::auth_env::account_dir(
-        &state.data_dir,
-        "open.test",
-        "qmscid111111111111111111111111111111111111111",
-    );
+    // Filed under the DID's SCID projection, not the human name "carol" —
+    // SCID-primary accounts (PLANSCID.md, ARC.md §2.9): the account itself
+    // is keyed by a case-insensitive-safe re-encoding of the permanent SCID
+    // (`did::scid_localpart`), and "carol" becomes a delivery alias instead
+    // (checked below), so a later username change is never a directory move.
+    let acct = crate::auth_env::account_dir(&state.data_dir, "open.test", REAL_SCID_LOCALPART);
     assert_eq!(
         jmapserver::did::devicekeys::list_device_keys(&acct).len(),
         1,
@@ -520,7 +527,7 @@ async fn an_anchored_provision_claims_then_vouches_then_writes_the_device() {
     let parsed = serde_json::from_str::<serde_json::Value>(&body).unwrap();
     assert_eq!(parsed["did_bound"], true);
     assert_eq!(
-        parsed["email"], "qmscid111111111111111111111111111111111111111@open.test",
+        parsed["email"], format!("{REAL_SCID_LOCALPART}@open.test"),
         "the client is told its SCID address, not the human name it claimed"
     );
     assert_eq!(
@@ -528,7 +535,7 @@ async fn an_anchored_provision_claims_then_vouches_then_writes_the_device() {
             .accounts
             .resolve("carol@open.test")
             .map(|a| a.email.clone()),
-        Some("qmscid111111111111111111111111111111111111111@open.test".to_string()),
+        Some(format!("{REAL_SCID_LOCALPART}@open.test")),
         "the human name is registered as an alias to the SCID account"
     );
 }
@@ -591,13 +598,20 @@ async fn a_rejected_vouch_after_a_good_claim_creates_nothing() {
     assert!(!crate::auth_env::account_dir(&state.data_dir, "open.test", "carol").exists());
 }
 
-// ── authorized_did_domain: verify-binding instead of claim ─────────────────
+// ── authorized_did_domain: Lv1 gated by domain membership, always claim ────
+// (ARC.md §2.9, 2026-08-18: `authorized_did_domain` changed from
+// `Option<String>` naming one trusted did-domain, with a no-registry
+// verify-binding call, to `bool` gating admission by membership in this
+// relay's own `config.domains` — and the anchor call is now unconditionally
+// `claim`, since `did::alias_reconcile` (Lv2) must be able to look up every
+// SCID-primary account's bound DID from the anchor's registry, continuously,
+// not just at provisioning time.)
 
 #[cfg(feature = "anchor")]
 fn authorized_did_domain_state(replies: Vec<(u16, &str)>) -> (Arc<RelayState>, Arc<ScriptedAnchor>) {
     let tmp = tempfile::tempdir().unwrap().keep();
     let cfg: Config = serde_json::from_str(
-        r#"{"domain":{"open.test":{"authorized_did_domain":"biset.md"}},
+        r#"{"domain":{"open.test":{"authorized_did_domain":true}},
             "anchor_url":"https://anchor.test","anchor_token":"relay-secret"}"#,
     )
     .unwrap();
@@ -615,55 +629,87 @@ fn authorized_did_domain_state(replies: Vec<(u16, &str)>) -> (Arc<RelayState>, A
     (state, transport)
 }
 
-/// The one thing this whole mode exists to prove at the wire level: a domain
-/// configured with `authorized_did_domain` hits `/_anchor/verify-binding`,
-/// never `/_anchor/identity/*` — the claim registry is not consulted, and
-/// nothing is written to it.
+fn webvh_provision_own_domain() -> String {
+    serde_json::json!({
+        "username": "carol", "domain": "open.test",
+        "did": format!("did:webvh:{REAL_SCID}:open.test:carol"),
+        "did_sig": "c2ln", "bind_ts": 1_785_000_000i64,
+        "device_pub_key": "DEVKEY", "device_label": "Laptop",
+        "device_vouch_ts": 1_785_000_000i64, "device_vouch_sig": "c2ln",
+    })
+    .to_string()
+}
+
+/// The identity's did:webvh document lives at `open.test` itself — the one
+/// domain this relay administers — so it is admitted, and the anchor call is
+/// an ordinary `claim` (never `verify_binding`, which no longer exists on
+/// this path at all), keyed by the SCID projection, not `username`.
 #[cfg(feature = "anchor")]
 #[tokio::test]
-async fn authorized_did_domain_calls_verify_binding_not_claim() {
+async fn authorized_did_domain_admits_and_always_claims() {
     let (state, anchor) = authorized_did_domain_state(vec![(200, ""), (200, "")]);
-    let (status, body) = provision(state.clone(), webvh_provision()).await;
+    let (status, body) = provision(state.clone(), webvh_provision_own_domain()).await;
     assert_eq!(status, 201, "{body}");
 
     let seen = anchor.seen.lock().clone();
-    assert_eq!(seen.len(), 2, "one verify-binding, one vouch");
+    assert_eq!(seen.len(), 2, "one claim, one vouch");
     assert!(
-        seen[0].starts_with("https://anchor.test/_anchor/verify-binding"),
-        "expected verify-binding, not the claim registry: {}",
+        seen[0].starts_with(&format!("https://anchor.test/_anchor/identity/{REAL_SCID_LOCALPART}")),
+        "expected the claim registry, keyed by the SCID projection: {}",
         seen[0]
     );
     assert!(
-        !seen[0].contains("/_anchor/identity/"),
-        "the claim registry route must never be hit on this path: {}",
-        seen[0]
-    );
-    assert!(
-        seen[1].starts_with("https://anchor.test/_anchor/devices/vouch"),
-        "{}",
+        seen[1].contains(REAL_SCID_LOCALPART),
+        "the vouch is checked against the same name the claim used: {}",
         seen[1]
     );
-
-    // The body carries username explicitly (verify-binding has no
-    // localpart-in-path shape the way /_anchor/identity/<localpart> does).
-    assert!(seen[0].contains(r#""username":"carol""#), "{}", seen[0]);
-    assert!(seen[0].contains(r#""domain":"open.test""#), "{}", seen[0]);
+    assert!(
+        crate::auth_env::account_dir(&state.data_dir, "open.test", REAL_SCID_LOCALPART).exists(),
+        "the account is filed under the SCID projection, not \"carol\""
+    );
 }
 
-/// verify-binding has no 409 — there is no registry entry to conflict with.
-/// A rejected binding here is always a 401 (signature/domain/username
-/// mismatch), never "owned by a different key".
+/// An identity whose did:webvh document lives somewhere this relay does NOT
+/// administer never reaches the anchor at all — Lv1 itself is refused.
 #[cfg(feature = "anchor")]
 #[tokio::test]
-async fn a_rejected_verify_binding_is_401_not_a_claim_conflict() {
-    let (state, anchor) = authorized_did_domain_state(vec![(401, "DID does not name this username")]);
-    let (status, _) = provision(state.clone(), webvh_provision()).await;
+async fn authorized_did_domain_refuses_an_unadministered_identity() {
+    let (state, anchor) = authorized_did_domain_state(vec![]);
+    let body = serde_json::json!({
+        "username": "carol", "domain": "open.test",
+        "did": format!("did:webvh:{REAL_SCID}:stranger.example:carol"),
+        "did_sig": "c2ln", "bind_ts": 1_785_000_000i64,
+        "device_pub_key": "DEVKEY", "device_label": "Laptop",
+        "device_vouch_ts": 1_785_000_000i64, "device_vouch_sig": "c2ln",
+    })
+    .to_string();
+    let (status, _) = provision(state.clone(), body).await;
     assert_eq!(
         status,
-        crate::did::provision::Refusal::DidBindingRejected.status()
+        crate::did::provision::Refusal::DidDomainNotAuthorized.status()
+    );
+    assert!(anchor.seen.lock().is_empty(), "the anchor is never asked");
+    assert!(
+        !crate::auth_env::account_dir(&state.data_dir, "open.test", REAL_SCID_LOCALPART).exists()
+    );
+}
+
+/// A rejected claim is a genuine registry conflict now (never
+/// `verify_binding`'s signature-only 401) — same shape as any other Lv1
+/// claim rejection.
+#[cfg(feature = "anchor")]
+#[tokio::test]
+async fn a_rejected_claim_on_this_path_is_a_conflict_not_a_binding_rejection() {
+    let (state, anchor) = authorized_did_domain_state(vec![(409, "held by a different key")]);
+    let (status, _) = provision(state.clone(), webvh_provision_own_domain()).await;
+    assert_eq!(
+        status,
+        crate::did::provision::Refusal::IdentityOwnedByAnother.status()
     );
     assert_eq!(anchor.seen.lock().len(), 1, "the vouch was never asked");
-    assert!(!crate::auth_env::account_dir(&state.data_dir, "open.test", "carol").exists());
+    assert!(
+        !crate::auth_env::account_dir(&state.data_dir, "open.test", REAL_SCID_LOCALPART).exists()
+    );
 }
 
 // ── bring-your-own domain ─────────────────────────────────────────────────
@@ -729,11 +775,16 @@ async fn a_verified_domain_is_registered_gated_and_never_open() {
         "one past registration must not open the domain forever"
     );
     assert_eq!(
-        crate::did::provision::may_provision(&registered, "", "", ""),
+        crate::did::provision::may_provision(&Config::default(), &registered, "", ""),
         Err(crate::did::provision::Refusal::DomainNotOpen)
     );
     assert_eq!(
-        crate::did::provision::may_provision(&registered, "", "", &registered.provision_secret),
+        crate::did::provision::may_provision(
+            &Config::default(),
+            &registered,
+            "",
+            &registered.provision_secret
+        ),
         Ok(())
     );
 
@@ -1042,7 +1093,7 @@ fn state_with_legacy_account() -> (Arc<RelayState>, String) {
 #[tokio::test]
 async fn migrating_to_scid_renames_the_account_and_aliases_the_old_name() {
     let (state, auth) = state_with_legacy_account();
-    let did = "did:webvh:QmMigrateTest1111111111111111111111111111111:a.test:bob";
+    let did = format!("did:webvh:{REAL_SCID}:a.test:bob");
 
     let req = Request::builder()
         .method(Method::POST)
@@ -1063,7 +1114,7 @@ async fn migrating_to_scid_renames_the_account_and_aliases_the_old_name() {
     assert_eq!(status, 200, "{body}");
     let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
     assert_eq!(
-        parsed["email"], "qmmigratetest1111111111111111111111111111111@a.test",
+        parsed["email"], format!("{REAL_SCID_LOCALPART}@a.test"),
         "the caller is told its new SCID address"
     );
 
@@ -1075,7 +1126,7 @@ async fn migrating_to_scid_renames_the_account_and_aliases_the_old_name() {
     assert!(
         state
             .data_dir
-            .join("a.test/qmmigratetest1111111111111111111111111111111")
+            .join(format!("a.test/{REAL_SCID_LOCALPART}"))
             .exists(),
         "the account now lives under its SCID"
     );
@@ -1088,12 +1139,12 @@ async fn migrating_to_scid_renames_the_account_and_aliases_the_old_name() {
             .accounts
             .resolve("bob@a.test")
             .map(|a| a.email.clone()),
-        Some("qmmigratetest1111111111111111111111111111111@a.test".to_string())
+        Some(format!("{REAL_SCID_LOCALPART}@a.test"))
     );
     assert!(
         state
             .accounts
-            .get("qmmigratetest1111111111111111111111111111111@a.test")
+            .get(&format!("{REAL_SCID_LOCALPART}@a.test"))
             .is_some(),
         "the new primary answers directly too"
     );

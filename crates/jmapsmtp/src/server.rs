@@ -1511,28 +1511,31 @@ mod handlers {
                 Ok(v) => v,
                 Err(r) => return refuse(r),
             };
-            if let Err(r) = crate::did::provision::may_provision(&dom_cfg,
+            if let Err(r) = crate::did::provision::may_provision(
+                &state.cfg,
+                &dom_cfg,
                 &request.did,
-                &username,
                 &request.provision_secret,
             ) {
                 return refuse(r);
             }
 
-            // SCID-primary accounts (PLANSCID.md): the actual JMAP account is
-            // keyed by the DID's permanent SCID segment, never by the human
-            // name being claimed here — a later rename (Edit identity)
-            // becomes an alias-table update, never a data move. Falls back
-            // to the human username itself when the DID doesn't read as
-            // biset's own did:webvh shape (a different method, an apex DID,
-            // a foreign did:webvh convention): the claim/anchor
-            // authorization below already accepts those, so provisioning
-            // must not now refuse them for a reason unrelated to that
-            // authorization.
+            // SCID-primary accounts (PLANSCID.md, ARC.md §2.9's Lv1): the
+            // actual JMAP account is keyed by a case-insensitive-safe
+            // projection of the DID's permanent SCID
+            // (`did::scid_localpart`), never by the human name — a later
+            // rename (Edit identity) becomes an alias-table update, never a
+            // data move, and `did::alias_reconcile` keeps that alias (Lv2)
+            // current on its own from here on, with no further action by
+            // this handler. Falls back to the human username itself when the
+            // DID doesn't read as biset's own did:webvh shape (a different
+            // method, an apex DID, a foreign did:webvh convention): the
+            // claim/anchor authorization below already accepts those, so
+            // provisioning must not now refuse them for a reason unrelated
+            // to that authorization.
             let primary_localpart = crate::did::webvh_id::parse(&request.did)
                 .ok()
-                .map(|id| id.scid.to_lowercase())
-                .filter(|scid| !scid.is_empty())
+                .and_then(|id| crate::did::scid_localpart::to_localpart(&id.scid))
                 .unwrap_or_else(|| username.clone());
             let primary_email = format!("{primary_localpart}@{domain}");
 
@@ -1567,11 +1570,18 @@ mod handlers {
                 }
                 #[cfg(feature = "anchor")]
                 crate::did::provision::VouchPath::Anchor => {
-                    // Claim the name first (or, on the authorized_did_domain
-                    // path, verify without claiming — see verify_binding's own
-                    // note on why no registry is needed there). Either way, a
-                    // vouch accepted against a name this DID does not hold
-                    // would bind a device to somebody else's mailbox.
+                    // Always a full claim, keyed by `primary_localpart` (the
+                    // SCID projection) — never `username`, and never the old
+                    // authorized_did_domain shortcut of verifying without
+                    // recording one. `did::alias_reconcile` (ARC.md §2.9's
+                    // Lv2) has to be able to look up "which DID owns this
+                    // primary" from the anchor's claim registry for every
+                    // SCID-primary account, continuously, not just at
+                    // provisioning time — a claim-less account would be
+                    // invisible to it forever. A vouch accepted against a
+                    // name this DID does not hold would bind a device to
+                    // somebody else's mailbox, which is what the claim
+                    // guards against either way.
                     let anchor = crate::did::anchor::anchor_ref(&state.cfg);
                     let binding_proof = jmapserver::did::anchor::BindingProof {
                         sig: request.did_sig.clone(),
@@ -1581,25 +1591,14 @@ mod handlers {
                         // signature captured elsewhere being replayed here.
                         host: host_header(req),
                     };
-                    let claimed = if dom_cfg.authorized_did_domain.is_some() {
-                        jmapserver::did::anchor::verify_binding(
-                            state.anchor.as_ref(),
-                            &anchor,
-                            &username,
-                            &domain,
-                            &request.did,
-                            &binding_proof,
-                        )
-                    } else {
-                        jmapserver::did::anchor::claim(
-                            state.anchor.as_ref(),
-                            &anchor,
-                            &username,
-                            &domain,
-                            &request.did,
-                            &binding_proof,
-                        )
-                    };
+                    let claimed = jmapserver::did::anchor::claim(
+                        state.anchor.as_ref(),
+                        &anchor,
+                        &primary_localpart,
+                        &domain,
+                        &request.did,
+                        &binding_proof,
+                    );
                     if let Some(refusal) = crate::did::anchor::provision_refusal(claimed) {
                         return refuse(refusal);
                     }
@@ -1607,7 +1606,7 @@ mod handlers {
                     let vouched = jmapserver::did::anchor::vouch_device(
                         state.anchor.as_ref(),
                         &anchor,
-                        &username,
+                        &primary_localpart,
                         &domain,
                         &request.did,
                         &jmapserver::did::anchor::DeviceVouchProof {
@@ -1621,7 +1620,7 @@ mod handlers {
                         return refuse(crate::did::provision::Refusal::DeviceVouchRejected);
                     }
                     let vouch = crate::did::devices::VouchRequest {
-                        username: username.clone(),
+                        username: primary_localpart.clone(),
                         domain: domain.clone(),
                         did: request.did.clone(),
                         device_pub_key: request.device_pub_key.clone(),
@@ -1857,9 +1856,11 @@ mod handlers {
             let Ok(webvh) = crate::did::webvh_id::parse(&request.did) else {
                 return text_error(400, "did does not read as biset's own did:webvh shape — nothing to migrate to");
             };
-            let scid = webvh.scid.to_lowercase();
-            if scid.is_empty() || scid == localpart {
-                return text_error(409, "already SCID-primary, or the DID carries no usable SCID");
+            let Some(scid) = crate::did::scid_localpart::to_localpart(&webvh.scid) else {
+                return text_error(400, "did carries no usable SCID");
+            };
+            if scid == localpart {
+                return text_error(409, "already SCID-primary");
             }
 
             let old_dir = crate::auth_env::account_dir(&state.data_dir, &domain, &localpart);
