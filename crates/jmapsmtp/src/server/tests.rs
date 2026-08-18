@@ -400,7 +400,7 @@ struct ScriptedAnchor {
 }
 
 #[cfg(feature = "anchor")]
-impl jmapserver::anchor::Transport for ScriptedAnchor {
+impl jmapserver::did::anchor::Transport for ScriptedAnchor {
     fn send(
         &self,
         _method: &str,
@@ -513,7 +513,7 @@ async fn an_anchored_provision_claims_then_vouches_then_writes_the_device() {
         "qmscid111111111111111111111111111111111111111",
     );
     assert_eq!(
-        jmapserver::devicekeys::list_device_keys(&acct).len(),
+        jmapserver::did::devicekeys::list_device_keys(&acct).len(),
         1,
         "the device key is written only after the anchor agrees"
     );
@@ -542,7 +542,7 @@ async fn a_conflicting_claim_stops_before_the_vouch_is_even_asked() {
     let (status, _) = provision(state.clone(), webvh_provision()).await;
     assert_eq!(
         status,
-        crate::provision::Refusal::IdentityOwnedByAnother.status()
+        crate::did::provision::Refusal::IdentityOwnedByAnother.status()
     );
     assert_eq!(anchor.seen.lock().len(), 1, "the vouch was never asked");
     assert!(
@@ -585,7 +585,7 @@ async fn a_rejected_vouch_after_a_good_claim_creates_nothing() {
     let (status, _) = provision(state.clone(), webvh_provision()).await;
     assert_eq!(
         status,
-        crate::provision::Refusal::DeviceVouchRejected.status()
+        crate::did::provision::Refusal::DeviceVouchRejected.status()
     );
     assert_eq!(anchor.seen.lock().len(), 2);
     assert!(!crate::auth_env::account_dir(&state.data_dir, "open.test", "carol").exists());
@@ -660,7 +660,7 @@ async fn a_rejected_verify_binding_is_401_not_a_claim_conflict() {
     let (status, _) = provision(state.clone(), webvh_provision()).await;
     assert_eq!(
         status,
-        crate::provision::Refusal::DidBindingRejected.status()
+        crate::did::provision::Refusal::DidBindingRejected.status()
     );
     assert_eq!(anchor.seen.lock().len(), 1, "the vouch was never asked");
     assert!(!crate::auth_env::account_dir(&state.data_dir, "open.test", "carol").exists());
@@ -729,11 +729,11 @@ async fn a_verified_domain_is_registered_gated_and_never_open() {
         "one past registration must not open the domain forever"
     );
     assert_eq!(
-        crate::provision::may_provision(&registered, "", "", ""),
-        Err(crate::provision::Refusal::DomainNotOpen)
+        crate::did::provision::may_provision(&registered, "", "", ""),
+        Err(crate::did::provision::Refusal::DomainNotOpen)
     );
     assert_eq!(
-        crate::provision::may_provision(&registered, "", "", &registered.provision_secret),
+        crate::did::provision::may_provision(&registered, "", "", &registered.provision_secret),
         Ok(())
     );
 

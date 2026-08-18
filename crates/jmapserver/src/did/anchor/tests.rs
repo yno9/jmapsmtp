@@ -446,3 +446,96 @@ fn draining_nothing_releases_nothing() {
         "an empty drain must not talk to the anchor at all"
     );
 }
+
+// ── current_alias ─────────────────────────────────────────────────────────
+
+#[test]
+fn a_404_is_not_bound_never_unknown() {
+    let fake = Fake::answering(404, "");
+    assert_eq!(
+        current_alias(&fake, &anchor(), "abc123scid", "a.test"),
+        AliasLookup::NotBound
+    );
+}
+
+#[test]
+fn a_resolved_did_names_its_current_username_and_domain() {
+    let fake = Fake::answering(
+        200,
+        r#"{"did":"did:webvh:abc123scid:a.test:y","currentUsername":"y","currentDomain":"a.test"}"#,
+    );
+    assert_eq!(
+        current_alias(&fake, &anchor(), "abc123scid", "a.test"),
+        AliasLookup::Resolved {
+            username: Some("y".into()),
+            domain: Some("a.test".into()),
+        }
+    );
+}
+
+/// A deactivated (or otherwise gone) DID is a clean, definite "nothing" —
+/// `Resolved` with both fields `None` — not the same outcome as a lookup
+/// that never got an answer at all.
+#[test]
+fn a_deactivated_did_resolves_to_nothing_not_unknown() {
+    let fake = Fake::answering(200, r#"{"did":"did:webvh:abc123scid:a.test:y","currentUsername":null,"currentDomain":null}"#);
+    assert_eq!(
+        current_alias(&fake, &anchor(), "abc123scid", "a.test"),
+        AliasLookup::Resolved {
+            username: None,
+            domain: None,
+        }
+    );
+}
+
+/// The whole reason `Unknown` is its own variant: none of these must ever be
+/// read as "the DID says nothing" by a caller deciding whether to delete an
+/// alias.
+#[test]
+fn unreachable_unparsable_and_refused_are_all_unknown_never_resolved() {
+    assert_eq!(
+        current_alias(&Fake::default(), &anchor(), "abc123scid", "a.test"),
+        AliasLookup::Unknown,
+        "unreachable"
+    );
+    assert_eq!(
+        current_alias(&Fake::answering(200, "not json"), &anchor(), "abc123scid", "a.test"),
+        AliasLookup::Unknown,
+        "unparsable body"
+    );
+    assert_eq!(
+        current_alias(&Fake::answering(503, ""), &anchor(), "abc123scid", "a.test"),
+        AliasLookup::Unknown,
+        "anchor-side failure"
+    );
+    assert_eq!(
+        current_alias(&Fake::answering(403, ""), &anchor(), "abc123scid", "a.test"),
+        AliasLookup::Unknown,
+        "this relay refused"
+    );
+}
+
+#[test]
+fn an_anchorless_relay_never_reaches_the_transport_for_current_alias() {
+    let fake = Fake::default();
+    let anchorless = Ref::default();
+    assert_eq!(
+        current_alias(&fake, &anchorless, "abc123scid", "a.test"),
+        AliasLookup::Unknown
+    );
+    assert!(fake.seen.lock().unwrap().is_empty());
+}
+
+#[test]
+fn the_alias_target_lookup_names_the_localpart_and_escapes_the_domain() {
+    let fake = Fake::answering(404, "");
+    current_alias(&fake, &anchor(), "abc123scid", "a b.test");
+    let (method, url, token, body) = fake.last();
+    assert_eq!(method, "GET");
+    assert_eq!(
+        url,
+        "https://anchor.test/_anchor/alias-target/abc123scid?domain=a+b.test"
+    );
+    assert_eq!(token, "relay-secret");
+    assert_eq!(body, None, "a GET carries no body");
+}

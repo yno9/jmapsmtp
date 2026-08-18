@@ -60,7 +60,7 @@ pub struct RelayState {
     /// Talks to the identity anchor. Absent in the anchorless build, where
     /// there is nothing to talk to.
     #[cfg(feature = "anchor")]
-    pub anchor: Arc<dyn jmapserver::anchor::Transport>,
+    pub anchor: Arc<dyn jmapserver::did::anchor::Transport>,
     /// Outbound SMTP attempts, by result. Counters, so they only ever rise.
     smtp_sent: std::sync::atomic::AtomicU64,
     smtp_failed: std::sync::atomic::AtomicU64,
@@ -68,7 +68,7 @@ pub struct RelayState {
     /// nonce half — `session_nonce.rs`'s own note has the full reasoning).
     /// Not persisted: a nonce's whole useful lifetime is 60s, so losing this
     /// on restart just means a client re-asks, which is an ordinary retry.
-    pub session_nonces: jmapserver::session_nonce::SessionNonceStore,
+    pub session_nonces: jmapserver::did::session_nonce::SessionNonceStore,
     mux: GoMux<RouteSpec>,
 }
 
@@ -101,10 +101,10 @@ impl RelayState {
             txt: Arc::new(NoDns),
             mx: Arc::new(NoDns),
             #[cfg(feature = "anchor")]
-            anchor: crate::anchor::HttpTransport::new(),
+            anchor: crate::did::anchor::HttpTransport::new(),
             smtp_sent: std::sync::atomic::AtomicU64::new(0),
             smtp_failed: std::sync::atomic::AtomicU64::new(0),
-            session_nonces: jmapserver::session_nonce::SessionNonceStore::new(),
+            session_nonces: jmapserver::did::session_nonce::SessionNonceStore::new(),
             mux,
         })
     }
@@ -262,7 +262,7 @@ impl RelayState {
     #[cfg(all(test, feature = "anchor"))]
     pub fn set_anchor(
         self: &mut Arc<RelayState>,
-        transport: Arc<dyn jmapserver::anchor::Transport>,
+        transport: Arc<dyn jmapserver::did::anchor::Transport>,
     ) {
         if let Some(state) = Arc::get_mut(self) {
             state.anchor = transport;
@@ -1020,7 +1020,7 @@ mod handlers {
             let nonce = state.session_nonces.issue();
             match jmap_types::go_json::to_vec(&serde_json::json!({
                 "nonce": nonce,
-                "expires_in": jmapserver::session_nonce::NONCE_TTL_SECS,
+                "expires_in": jmapserver::did::session_nonce::NONCE_TTL_SECS,
             })) {
                 Ok(body) => json_response(200, body),
                 Err(_) => text_error(500, "internal error"),
@@ -1037,9 +1037,9 @@ mod handlers {
         let mut res = if req.method() != axum::http::Method::POST {
             method_not_allowed()
         } else {
-            match serde_json::from_slice::<crate::devices::SessionRequest>(body) {
+            match serde_json::from_slice::<crate::did::devices::SessionRequest>(body) {
                 Err(_) => text_error(400, "invalid JSON"),
-                Ok(login) => match crate::devices::login(
+                Ok(login) => match crate::did::devices::login(
                     &state.data_dir,
                     &login,
                     &host_header(req),
@@ -1074,7 +1074,7 @@ mod handlers {
             let acct = crate::auth_env::account_dir(&state.data_dir, &domain, &localpart);
             match *req.method() {
                 axum::http::Method::GET => {
-                    let keys = jmapserver::devicekeys::list_device_keys(&acct);
+                    let keys = jmapserver::did::devicekeys::list_device_keys(&acct);
                     match jmap_types::go_json::to_vec(&keys) {
                         Ok(body) => json_response(200, body),
                         Err(_) => text_error(500, "internal error"),
@@ -1082,9 +1082,9 @@ mod handlers {
                 }
                 axum::http::Method::DELETE => {
                     let Some(id) = query_param(req, "id").filter(|i| !i.is_empty()) else {
-                        return text_error(400, crate::devices::DeviceError::IdRequired.message());
+                        return text_error(400, crate::did::devices::DeviceError::IdRequired.message());
                     };
-                    match jmapserver::devicekeys::remove_device_key(&acct, &id) {
+                    match jmapserver::did::devicekeys::remove_device_key(&acct, &id) {
                         Ok(()) => no_content(),
                         Err(_) => text_error(500, "internal error"),
                     }
@@ -1101,38 +1101,38 @@ mod handlers {
     }
 
     fn vouch_device(state: &RelayState, body: &[u8]) -> Response<Body> {
-        let Ok(vouch) = serde_json::from_slice::<crate::devices::VouchRequest>(body) else {
+        let Ok(vouch) = serde_json::from_slice::<crate::did::devices::VouchRequest>(body) else {
             return text_error(400, "invalid JSON");
         };
         let (localpart, domain) = match vouch.account() {
             Ok(v) => v,
             Err(e) => return text_error(e.status(), e.message()),
         };
-        if !crate::devices::account_exists(&state.data_dir, &domain, &localpart) {
-            let e = crate::devices::DeviceError::NoSuchAccount;
+        if !crate::did::devices::account_exists(&state.data_dir, &domain, &localpart) {
+            let e = crate::did::devices::DeviceError::NoSuchAccount;
             return text_error(e.status(), e.message());
         }
-        match crate::devices::check_vouch(&state.cfg, &vouch, now_unix()) {
+        match crate::did::devices::check_vouch(&state.cfg, &vouch, now_unix()) {
             Err(e) => text_error(e.status(), e.message()),
-            Ok(crate::provision::VouchPath::Anchor) => {
+            Ok(crate::did::provision::VouchPath::Anchor) => {
                 #[cfg(feature = "anchor")]
                 {
-                    let verdict = jmapserver::anchor::vouch_device(
+                    let verdict = jmapserver::did::anchor::vouch_device(
                         state.anchor.as_ref(),
-                        &crate::anchor::anchor_ref(&state.cfg),
+                        &crate::did::anchor::anchor_ref(&state.cfg),
                         &localpart,
                         &domain,
                         &vouch.did,
-                        &jmapserver::anchor::DeviceVouchProof {
+                        &jmapserver::did::anchor::DeviceVouchProof {
                             device_pub_key: vouch.device_pub_key.clone(),
                             label: vouch.label.clone(),
                             sig: vouch.sig.clone(),
                             ts: vouch.bind_ts,
                         },
                     );
-                    match crate::anchor::device_error(verdict) {
+                    match crate::did::anchor::device_error(verdict) {
                         Some(e) => text_error(e.status(), e.message()),
-                        None => match crate::devices::write_device(
+                        None => match crate::did::devices::write_device(
                             &state.data_dir,
                             &domain,
                             &localpart,
@@ -1146,12 +1146,12 @@ mod handlers {
                 }
                 #[cfg(not(feature = "anchor"))]
                 {
-                    let e = crate::devices::DeviceError::AnchorUnavailable;
+                    let e = crate::did::devices::DeviceError::AnchorUnavailable;
                     text_error(e.status(), e.message())
                 }
             }
             Ok(_) => {
-                match crate::devices::write_device(
+                match crate::did::devices::write_device(
                     &state.data_dir,
                     &domain,
                     &localpart,
@@ -1400,19 +1400,19 @@ mod handlers {
         if req.method() != axum::http::Method::POST {
             return method_not_allowed();
         }
-        let anchor = crate::anchor::anchor_ref(&state.cfg);
+        let anchor = crate::did::anchor::anchor_ref(&state.cfg);
         if !anchor.is_configured() {
             return text_error(400, "relay is not anchored — nothing to drain");
         }
-        let names: Vec<jmapserver::anchor::Name> =
+        let names: Vec<jmapserver::did::anchor::Name> =
             jmapserver::admin::list_provisioned(&state.data_dir)
                 .into_iter()
-                .map(|r| jmapserver::anchor::Name {
+                .map(|r| jmapserver::did::anchor::Name {
                     localpart: r.localpart,
                     domain: r.domain,
                 })
                 .collect();
-        let report = jmapserver::anchor::drain(state.anchor.as_ref(), &anchor, &names);
+        let report = jmapserver::did::anchor::drain(state.anchor.as_ref(), &anchor, &names);
         println!(
             "[drain] anchor {}: released {}, failed {}",
             anchor.url,
@@ -1446,8 +1446,8 @@ mod handlers {
                 return unauthorized();
             };
 
-            let anchor = crate::anchor::anchor_ref(&state.cfg);
-            let request = match crate::did_bind::decide(anchor.is_configured(), body) {
+            let anchor = crate::did::anchor::anchor_ref(&state.cfg);
+            let request = match crate::did::bind::decide(anchor.is_configured(), body) {
                 Ok(r) => r,
                 Err(refusal) => return text_error(refusal.status(), refusal.message()),
             };
@@ -1463,19 +1463,19 @@ mod handlers {
                 .unwrap_or("")
                 .to_string();
 
-            let verdict = jmapserver::anchor::claim(
+            let verdict = jmapserver::did::anchor::claim(
                 state.anchor.as_ref(),
                 &anchor,
                 &localpart,
                 &domain,
                 &request.did,
-                &jmapserver::anchor::BindingProof {
+                &jmapserver::did::anchor::BindingProof {
                     sig: request.did_sig,
                     ts: request.bind_ts,
                     host,
                 },
             );
-            match crate::did_bind::from_verdict(verdict) {
+            match crate::did::bind::from_verdict(verdict) {
                 Some(refusal) => text_error(refusal.status(), refusal.message()),
                 None => no_content(),
             }
@@ -1493,17 +1493,17 @@ mod handlers {
             if req.method() != axum::http::Method::POST {
                 return method_not_allowed();
             }
-            let Ok(request) = serde_json::from_slice::<crate::provision::ProvisionRequest>(body)
+            let Ok(request) = serde_json::from_slice::<crate::did::provision::ProvisionRequest>(body)
             else {
                 return text_error(400, "invalid JSON");
             };
-            let refuse = |r: crate::provision::Refusal| text_error(r.status(), r.message());
+            let refuse = |r: crate::did::provision::Refusal| text_error(r.status(), r.message());
 
-            if let Err(r) = crate::provision::validate(&state.cfg, &request) {
+            if let Err(r) = crate::did::provision::validate(&state.cfg, &request) {
                 return refuse(r);
             }
             let username = request.username.trim().to_lowercase();
-            let (domain, dom_cfg) = match crate::provision::resolve_domain(
+            let (domain, dom_cfg) = match crate::did::provision::resolve_domain(
                 &state.cfg,
                 &state.dynamic_domains,
                 &request.domain,
@@ -1511,7 +1511,7 @@ mod handlers {
                 Ok(v) => v,
                 Err(r) => return refuse(r),
             };
-            if let Err(r) = crate::provision::may_provision(&dom_cfg,
+            if let Err(r) = crate::did::provision::may_provision(&dom_cfg,
                 &request.did,
                 &username,
                 &request.provision_secret,
@@ -1529,7 +1529,7 @@ mod handlers {
             // authorization below already accepts those, so provisioning
             // must not now refuse them for a reason unrelated to that
             // authorization.
-            let primary_localpart = crate::webvh_id::parse(&request.did)
+            let primary_localpart = crate::did::webvh_id::parse(&request.did)
                 .ok()
                 .map(|id| id.scid.to_lowercase())
                 .filter(|scid| !scid.is_empty())
@@ -1539,14 +1539,14 @@ mod handlers {
             let acct_dir = crate::auth_env::account_dir(&state.data_dir, &domain, &primary_localpart);
             let already = state.dyn_accounts.contains(&primary_email)
                 || state.accounts.get(&primary_email).is_some();
-            if crate::provision::name_is_taken(
+            if crate::did::provision::name_is_taken(
                 &acct_dir,
                 &state.data_dir,
                 &domain,
                 &primary_localpart,
                 already,
             ) {
-                return refuse(crate::provision::Refusal::UsernameTaken);
+                return refuse(crate::did::provision::Refusal::UsernameTaken);
             }
             // The human name itself must not already be someone else's
             // alias — the check above only looked at the SCID's own
@@ -1558,22 +1558,22 @@ mod handlers {
             if let Some(existing) = state.accounts.resolve(&format!("{username}@{domain}"))
                 && existing.email != primary_email
             {
-                return refuse(crate::provision::Refusal::UsernameTaken);
+                return refuse(crate::did::provision::Refusal::UsernameTaken);
             }
 
-            match crate::provision::vouch_path(&state.cfg, &request.did) {
-                crate::provision::VouchPath::Impossible => {
-                    return refuse(crate::provision::Refusal::DidMethodNeedsAnchor);
+            match crate::did::provision::vouch_path(&state.cfg, &request.did) {
+                crate::did::provision::VouchPath::Impossible => {
+                    return refuse(crate::did::provision::Refusal::DidMethodNeedsAnchor);
                 }
                 #[cfg(feature = "anchor")]
-                crate::provision::VouchPath::Anchor => {
+                crate::did::provision::VouchPath::Anchor => {
                     // Claim the name first (or, on the authorized_did_domain
                     // path, verify without claiming — see verify_binding's own
                     // note on why no registry is needed there). Either way, a
                     // vouch accepted against a name this DID does not hold
                     // would bind a device to somebody else's mailbox.
-                    let anchor = crate::anchor::anchor_ref(&state.cfg);
-                    let binding_proof = jmapserver::anchor::BindingProof {
+                    let anchor = crate::did::anchor::anchor_ref(&state.cfg);
+                    let binding_proof = jmapserver::did::anchor::BindingProof {
                         sig: request.did_sig.clone(),
                         ts: request.bind_ts,
                         // Verbatim, as this relay observed it: it is what
@@ -1582,7 +1582,7 @@ mod handlers {
                         host: host_header(req),
                     };
                     let claimed = if dom_cfg.authorized_did_domain.is_some() {
-                        jmapserver::anchor::verify_binding(
+                        jmapserver::did::anchor::verify_binding(
                             state.anchor.as_ref(),
                             &anchor,
                             &username,
@@ -1591,7 +1591,7 @@ mod handlers {
                             &binding_proof,
                         )
                     } else {
-                        jmapserver::anchor::claim(
+                        jmapserver::did::anchor::claim(
                             state.anchor.as_ref(),
                             &anchor,
                             &username,
@@ -1600,27 +1600,27 @@ mod handlers {
                             &binding_proof,
                         )
                     };
-                    if let Some(refusal) = crate::anchor::provision_refusal(claimed) {
+                    if let Some(refusal) = crate::did::anchor::provision_refusal(claimed) {
                         return refuse(refusal);
                     }
 
-                    let vouched = jmapserver::anchor::vouch_device(
+                    let vouched = jmapserver::did::anchor::vouch_device(
                         state.anchor.as_ref(),
                         &anchor,
                         &username,
                         &domain,
                         &request.did,
-                        &jmapserver::anchor::DeviceVouchProof {
+                        &jmapserver::did::anchor::DeviceVouchProof {
                             device_pub_key: request.device_pub_key.clone(),
                             label: request.device_label.clone(),
                             sig: request.device_vouch_sig.clone(),
                             ts: request.device_vouch_ts,
                         },
                     );
-                    if crate::anchor::device_error(vouched).is_some() {
-                        return refuse(crate::provision::Refusal::DeviceVouchRejected);
+                    if crate::did::anchor::device_error(vouched).is_some() {
+                        return refuse(crate::did::provision::Refusal::DeviceVouchRejected);
                     }
-                    let vouch = crate::devices::VouchRequest {
+                    let vouch = crate::did::devices::VouchRequest {
                         username: username.clone(),
                         domain: domain.clone(),
                         did: request.did.clone(),
@@ -1637,7 +1637,7 @@ mod handlers {
                     // below. Filing it under the human name here would leave
                     // every one of those looking in a directory nothing was
                     // ever written to.
-                    if crate::devices::write_device(
+                    if crate::did::devices::write_device(
                         &state.data_dir,
                         &domain,
                         &primary_localpart,
@@ -1650,8 +1650,8 @@ mod handlers {
                     }
                 }
                 #[cfg(not(feature = "anchor"))]
-                crate::provision::VouchPath::Anchor => {
-                    return refuse(crate::provision::Refusal::AnchorUnavailable);
+                crate::did::provision::VouchPath::Anchor => {
+                    return refuse(crate::did::provision::Refusal::AnchorUnavailable);
                 }
             }
 
@@ -1702,7 +1702,7 @@ mod handlers {
             if !request.did.is_empty() {
                 out.insert(
                     "did_bound".into(),
-                    crate::provision::did_bound(&state.cfg, &request).into(),
+                    crate::did::provision::did_bound(&state.cfg, &request).into(),
                 );
             }
             match jmap_types::go_json::to_vec(&serde_json::Value::Object(out)) {
@@ -1854,7 +1854,7 @@ mod handlers {
             let Ok(request) = serde_json::from_slice::<MigrateRequest>(body) else {
                 return text_error(400, "invalid JSON");
             };
-            let Ok(webvh) = crate::webvh_id::parse(&request.did) else {
+            let Ok(webvh) = crate::did::webvh_id::parse(&request.did) else {
                 return text_error(400, "did does not read as biset's own did:webvh shape — nothing to migrate to");
             };
             let scid = webvh.scid.to_lowercase();

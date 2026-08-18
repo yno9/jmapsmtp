@@ -22,7 +22,8 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use jmap_types::Id;
-use jmapserver::{decode_auth_token, devicekeys, verify_auth_token};
+use jmapserver::did::devicekeys;
+use jmapserver::{decode_auth_token, verify_auth_token};
 use parking_lot::RwLock;
 
 use crate::config::Config;

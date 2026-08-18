@@ -13,8 +13,8 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
 use jmapserver::DeviceKey;
-use jmapserver::devicebind;
-use jmapserver::devicekeys;
+use jmapserver::did::devicebind;
+use jmapserver::did::devicekeys;
 use pretty_assertions::assert_eq;
 use serde::{Deserialize, Serialize};
 

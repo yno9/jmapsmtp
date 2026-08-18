@@ -506,7 +506,7 @@ fn the_oracle_provisions_a_did_dht_identity_and_this_port_refuses_it() {
             .as_secs() as i64;
         let sig = base64::engine::general_purpose::STANDARD.encode(
             root.sign(
-                jmapserver::devicebind::vouch_statement(&did, &device_id, "Laptop", ts).as_bytes(),
+                jmapserver::did::devicebind::vouch_statement(&did, &device_id, "Laptop", ts).as_bytes(),
             )
             .to_bytes(),
         );
@@ -551,7 +551,7 @@ fn the_oracle_provisions_a_did_dht_identity_and_this_port_refuses_it() {
         let lp = "viaoracle";
         let acct = o.data_dir().join("open.test").join(lp);
         assert_eq!(
-            jmapserver::devicekeys::list_device_keys(&acct).len(),
+            jmapserver::did::devicekeys::list_device_keys(&acct).len(),
             1,
             "{lp}: the device key is the credential"
         );
@@ -641,7 +641,7 @@ fn provisioning_refuses_identically() {
                     .as_secs() as i64;
                 let sig = base64::engine::general_purpose::STANDARD.encode(
                     root.sign(
-                        jmapserver::devicebind::vouch_statement(&did, &device_id, "Laptop", ts)
+                        jmapserver::did::devicebind::vouch_statement(&did, &device_id, "Laptop", ts)
                             .as_bytes(),
                     )
                     .to_bytes(),

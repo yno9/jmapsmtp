@@ -12,23 +12,15 @@ pub const VERSION: &str = match option_env!("JMAPSMTP_VERSION") {
     None => "dev",
 };
 
-/// The identity anchor client. Absent in the `--no-default-features` build,
-/// which is this port's `go build -tags noanchor` — a relay with no anchor has
-/// no client for one rather than a stub that could be reached by mistake.
-#[cfg(feature = "anchor")]
-pub mod anchor;
-
 pub mod auth_env;
 pub mod autocrypt;
 pub mod bearer;
 pub mod config;
 pub mod customdomain;
 pub mod delivery;
-pub mod devices;
-/// The DID-binding decision. Anchor build only — an anchorless relay
-/// refuses a DID outright and never reaches this.
-#[cfg(feature = "anchor")]
-pub mod did_bind;
+/// Everything that exists because an account might be a did:webvh identity.
+/// See the module's own header for the boundary this draws.
+pub mod did;
 pub mod dkim;
 pub mod dkim_dns;
 pub mod dns;
@@ -39,9 +31,6 @@ pub mod inbound_tls;
 pub mod maintenance;
 pub mod outbound;
 pub mod pgp;
-/// The Pkarr gateway's routing decision. Anchor build only: without one
-/// there is no DHT node to forward to.
-pub mod provision;
 pub mod queue;
 pub mod routes;
 pub mod server;
@@ -52,7 +41,6 @@ pub mod smtp_out;
 pub mod startup;
 pub mod submit;
 pub mod webpush;
-pub mod webvh_id;
 pub mod wkd;
 
 /// Write a file only its owner can read.

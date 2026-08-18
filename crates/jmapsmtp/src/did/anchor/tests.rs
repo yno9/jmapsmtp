@@ -20,7 +20,7 @@ fn a_successful_claim_refuses_nothing() {
 fn a_conflict_is_reported_as_a_name_collision_not_a_bad_proof() {
     assert_eq!(
         provision_refusal(Verdict::Conflict),
-        Some(crate::provision::Refusal::IdentityOwnedByAnother)
+        Some(crate::did::provision::Refusal::IdentityOwnedByAnother)
     );
     assert_ne!(
         provision_refusal(Verdict::Conflict),
@@ -32,11 +32,11 @@ fn a_conflict_is_reported_as_a_name_collision_not_a_bad_proof() {
 fn a_rejected_proof_is_reported_as_one() {
     assert_eq!(
         provision_refusal(Verdict::Invalid),
-        Some(crate::provision::Refusal::DidBindingRejected)
+        Some(crate::did::provision::Refusal::DidBindingRejected)
     );
     assert_eq!(
         device_error(Verdict::Invalid),
-        Some(crate::devices::DeviceError::VouchRejected)
+        Some(crate::did::devices::DeviceError::VouchRejected)
     );
 }
 
@@ -47,11 +47,11 @@ fn a_rejected_proof_is_reported_as_one() {
 fn an_unreachable_anchor_refuses_rather_than_proceeding() {
     assert_eq!(
         provision_refusal(Verdict::Error),
-        Some(crate::provision::Refusal::AnchorUnavailable)
+        Some(crate::did::provision::Refusal::AnchorUnavailable)
     );
     assert_eq!(
         device_error(Verdict::Error),
-        Some(crate::devices::DeviceError::AnchorUnavailable)
+        Some(crate::did::devices::DeviceError::AnchorUnavailable)
     );
     assert_ne!(provision_refusal(Verdict::Error), None);
 }

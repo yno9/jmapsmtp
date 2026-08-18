@@ -114,7 +114,7 @@ pub fn txt_proves_ownership(records: &[String], expected: &str) -> bool {
 /// proving DNS control over `example.org` is a strictly stronger claim than
 /// holding a DID rooted there, so the two would agree. It is left absent
 /// because setting it would *replace* the secret gate rather than add to it
-/// (see [`crate::provision::may_provision`]) — a domain verified minutes ago
+/// (see [`crate::did::provision::may_provision`]) — a domain verified minutes ago
 /// would silently stop needing the proof it was just handed. Admitting
 /// identities by home domain is an operator's decision about a domain they
 /// configure, not something a verification flow may switch on by itself.

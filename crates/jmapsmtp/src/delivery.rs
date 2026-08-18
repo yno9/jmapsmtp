@@ -103,10 +103,28 @@ impl Delivery {
         // (`main.go`'s `e.MailboxIDs = {makeMailboxID(primary): true}`); this
         // port set the other two and not this one, so every delivered message
         // was invisible to biset.
-        message.mailbox_ids = std::collections::BTreeMap::from([(
-            jmap_types::Id::from(crate::handler::make_mailbox_id(&account.email).as_str()),
-            true,
-        )]);
+        //
+        // The ACTUAL current Inbox mailbox's own id, not a fresh
+        // `make_mailbox_id(&account.email)` — those only agree the moment an
+        // account is provisioned. A SCID migration (PLANSCID.md) renames the
+        // account's own login address but never rewrites the Inbox mailbox
+        // record already sitting in mailboxes.json (its id/name were derived
+        // from the OLD address at creation time and never revisited) — so
+        // mail delivered before a migration and mail delivered after it were
+        // landing in two DIFFERENT mailbox ids, invisible to each other from
+        // the client's own per-mailbox grouping (found live, 2026-08-18: one
+        // DeltaChat contact's conversation split into two separate inbox
+        // rows the moment their identity migrated). Falling back to the
+        // freshly-derived id only when no Inbox is on record at all yet — a
+        // genuinely fresh account, where the two still agree.
+        let inbox_id = account
+            .store
+            .mailboxes()
+            .into_iter()
+            .find(|m| m.role.as_str() == jmap_types::mailbox::Role::INBOX)
+            .map(|m| m.id)
+            .unwrap_or_else(|| jmap_types::Id::from(crate::handler::make_mailbox_id(&account.email).as_str()));
+        message.mailbox_ids = std::collections::BTreeMap::from([(inbox_id, true)]);
         let _ = from;
 
         seal_inbound(&mut message, &account.email, &account.dir, raw);

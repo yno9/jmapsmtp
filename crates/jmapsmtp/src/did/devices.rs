@@ -4,7 +4,7 @@
 //! This is the DID credential chain at runtime (SPEC.md §10-A):
 //!
 //! - **`GET /account/session/challenge`** hands out a single-use nonce
-//!   (`jmapserver::session_nonce`), also with no credential — the same
+//!   (`jmapserver::did::session_nonce`), also with no credential — the same
 //!   "no prior session available yet" posture the whole chain has. Its
 //!   answer feeds the session statement below.
 //!
@@ -52,7 +52,7 @@ pub struct SessionRequest {
     #[serde(default, rename = "device_pub_key")]
     pub device_pub_key: String,
     /// From a prior `GET /account/session/challenge`. Required and consumed
-    /// exactly once — see `jmapserver::session_nonce` for why.
+    /// exactly once — see `jmapserver::did::session_nonce` for why.
     #[serde(default)]
     pub nonce: String,
     #[serde(default)]
@@ -208,7 +208,7 @@ pub fn login(
     data_dir: &std::path::Path,
     req: &SessionRequest,
     relay_host: &str,
-    nonces: &jmapserver::session_nonce::SessionNonceStore,
+    nonces: &jmapserver::did::session_nonce::SessionNonceStore,
     now_unix: i64,
 ) -> Result<SessionResponse, DeviceError> {
     if !nonces.consume(&req.nonce) {
@@ -218,7 +218,7 @@ pub fn login(
     let (username, domain) = req.account()?;
     let acct_dir = crate::auth_env::account_dir(data_dir, &domain, &username);
 
-    if !jmapserver::devicekeys::verify_device_session(
+    if !jmapserver::did::devicekeys::verify_device_session(
         &acct_dir,
         &req.did,
         &req.device_pub_key,
@@ -235,7 +235,7 @@ pub fn login(
         return Err(DeviceError::SessionRejected);
     }
 
-    let token = jmapserver::devicekeys::issue_session_token(
+    let token = jmapserver::did::devicekeys::issue_session_token(
         &acct_dir,
         &req.device_pub_key,
         SESSION_TOKEN_TTL_SECS,
@@ -260,7 +260,7 @@ pub fn login(
 pub fn account_exists(data_dir: &std::path::Path, domain: &str, localpart: &str) -> bool {
     let acct_dir = crate::auth_env::account_dir(data_dir, domain, localpart);
     !crate::auth_env::read_auth_hash(data_dir, domain, localpart).is_empty()
-        || !jmapserver::devicekeys::list_device_keys(&acct_dir).is_empty()
+        || !jmapserver::did::devicekeys::list_device_keys(&acct_dir).is_empty()
 }
 
 /// How a vouch for this DID can be checked, and what to answer when it cannot.
@@ -274,11 +274,11 @@ pub fn check_vouch(
     cfg: &Config,
     req: &VouchRequest,
     now_unix: i64,
-) -> Result<crate::provision::VouchPath, DeviceError> {
+) -> Result<crate::did::provision::VouchPath, DeviceError> {
     let _ = now_unix;
-    match crate::provision::vouch_path(cfg, &req.did) {
-        crate::provision::VouchPath::Anchor => Ok(crate::provision::VouchPath::Anchor),
-        crate::provision::VouchPath::Impossible => Err(DeviceError::AnchorRequired),
+    match crate::did::provision::vouch_path(cfg, &req.did) {
+        crate::did::provision::VouchPath::Anchor => Ok(crate::did::provision::VouchPath::Anchor),
+        crate::did::provision::VouchPath::Impossible => Err(DeviceError::AnchorRequired),
     }
 }
 
@@ -291,7 +291,7 @@ pub fn write_device(
     now_unix: i64,
 ) -> std::io::Result<()> {
     let acct_dir = crate::auth_env::account_dir(data_dir, domain, localpart);
-    jmapserver::devicekeys::write_device_key(
+    jmapserver::did::devicekeys::write_device_key(
         &acct_dir,
         &jmapserver::DeviceKey {
             id: req.device_pub_key.clone(),

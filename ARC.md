@@ -15,20 +15,30 @@ The part that makes it unusual is **who a user is**.
 
 ---
 
-## 2. Identity is the DID, not the address
+## 2. Identity and account lifecycle
+
+Everything from "who may create an account" to "how a single request proves
+who it is from" is gathered here as one section rather than left scattered by
+file, because it is one design, not eight unrelated features: **the DID owns
+the account, and every credential below it — device key, session token,
+alias — is just something that DID vouched for.** §2.1–2.2 are the identity
+model itself; §2.3–2.8 are what it implies for account creation, binding,
+existence, aliasing, the anchor, and the route table, in the order a request
+actually passes through them.
+
+The code matches this on disk (2026-08-18): every module this section
+describes lives under `crates/jmapserver/src/did/` and
+`crates/jmapsmtp/src/did/`, not scattered by feature across each crate's root.
+This relay is a plain JMAP server first — most of it neither knows nor cares
+whether an account is DID-backed — and `did/` is the whole of what "and
+did:webvh-aware" adds on top; each crate's `did.rs` says so directly, and is
+the reading-order entry point this section's own order follows.
+
+### 2.1 Identity is the DID, not the address
 
 A user's identity — and therefore their inbox — rests on their **DID**. The
-address is a routing label that DID holds a claim on.
-
-```
-DID root key
-  └─ vouch:   devkey:<did>:<devicePubKey>:<label>:<ts>     signed by the root key
-       └─ device key            <acct>/devices/<pubkey>.json
-            └─ session: session:<did>:<devicePubKey>:<ts>  signed by the device
-                 └─ session token   <acct>/sessions/<hash>.json
-```
-
-Three consequences run through the whole design:
+address is a routing label that DID holds a claim on. Three consequences run
+through the whole design:
 
 - **The relay stores no DID.** Which addresses trace back to which identity is
   cross-relay information the anchor derives from the claim. A local copy is
@@ -47,70 +57,264 @@ Three consequences run through the whole design:
   implementation still has both, which makes this the widest declared
   divergence in the port.
 - **The signed statements are shared with the client byte for byte.** Three
-  implementations — biset, this relay, the anchor — agree on two strings.
+  implementations — biset, this relay, the anchor — agree on them (§2.2).
 
-The strings come from biset's `src/did/devicebind.ts`, and matching them is
-verified rather than assumed (`crates/jmapserver/src/devicebind.rs`, which is
-named after it). That module held the statements *and* did:dht until the
-method was removed — filing a statement format under one of the methods that
-happens to use it is why the removal first looked as though it would take
-device binding with it.
+### 2.2 The credential chain: root key → device key → session
 
----
-
-## 2a. `authorized_did_domain` — a third provisioning mode, and why it is one value, not a list
-
-`DomainConfig` has three ways to open a mail domain to self-service account
-creation, checked in strictness order (`provision.rs::may_provision`):
-`authorized_did_domain` (below), `allow_provision` (anyone), `provision_secret`
-(anyone holding a shared string). A domain with none of the three is not
-creatable at all.
-
-`authorized_did_domain` admits identities by where their `did:webvh` is
-rooted, and holds them to their own name: `did:webvh:{scid}:{that
-domain}:{username}` may have `{username}@{this mail domain}`, nothing else.
-The check is a string parse and two comparisons
-(`webvh_id.rs`/`did_domain_gate`) — no anchor round trip, no network.
-
-**It is `Option<String>`, never `Vec<String>`.** A mail domain names AT MOST
-ONE did-domain. This is not a limitation worked around elsewhere — it is what
-makes the whole mode need no separate claim registry: with exactly one
-did-domain per mail domain, the `did:webvh` log store's own
-append-only-per-(domain,username) shape already IS the non-duplication
-guarantee (one log per name, first writer wins, no second identity can ever
-overwrite it). A list of N did-domains sharing one mail domain would reopen
-the gap a registry exists to close — two different did-domains could both
-mint an `alice`, and something has to decide, first-come, which `alice@here`
-actually is. Pinning 1:1 is what lets that something be "nothing" instead of
-a new stateful service.
-
-Configured as an explicit pair per mail domain — `config.example.json`:
-
-```json
-"domain": {
-  "biset.md":   { "authorized_did_domain": "biset.md" },
-  "t.biset.md": { "authorized_did_domain": "t.biset.md" }
-}
+```
+DID root key
+  └─ vouch:   devkey:<did>:<devicePubKey>:<label>:<ts>                          signed by the root key
+       └─ device key            <acct>/devices/<pubkey>.json
+            └─ session: session:<did>:<devicePubKey>:<relayHost>:<nonce>:<ts>   signed by the device
+                 └─ session token   <acct>/sessions/<hash>.json
 ```
 
-**The relay's own domain is not implicit.** `biset.md` admits `biset.md`
-identities because it says so, same value on both sides — there is one rule,
-and "my own domain" is not a special case of it. A future third-party
-domain — some operator's `example.com` identities landing on this relay's
-`example.biset.md` — is the identical shape, one more pair, not a different
-code path (`the_relays_own_domain_is_not_implicitly_authorized`,
-`an_identity_from_the_named_domain_may_have_its_own_name` in
-`provision/tests.rs`).
+The two signed statements come from biset's `src/did/devicebind.ts`, and
+matching them is verified rather than assumed
+(`crates/jmapserver/src/did/devicebind.rs`, named after it — it held the
+statements *and* did:dht until the method was removed, and that misfiling is
+why the removal first looked as though it would take device binding with it).
 
-That third-party case is not yet reachable end to end: this relay resolves
-`did:webvh` documents by asking its own anchor (`anchor.rs`), and the anchor
-today only serves logs it hosts itself. A pair naming a domain the anchor does
-not host cannot be verified — `authorized_did_domain` will accept the config,
-but every provision against it fails at the anchor's resolve, not silently.
-Making that case real needs the anchor to resolve an ARBITRARY did-domain's
-log over HTTPS (not just its own store), which needs its own SSRF posture
-(no private/loopback/link-local targets, a size cap, a timeout) before it is
-safe to point at operator-supplied domains — tracked, not yet built.
+The session statement carries two segments the vouch statement doesn't
+(SPEC.md §11.28, 2026-08-16):
+
+- **`relayHost`** — without it, a device signature captured by one relay
+  verifies just as well replayed against a DIFFERENT relay the same device is
+  also registered with.
+- **`nonce`** — `relayHost` alone stops a cross-relay replay but not a
+  same-relay one inside the freshness window (`devicebind::FRESHNESS_WINDOW`,
+  300s): a captured signature POSTed again to the SAME relay still verifies on
+  `ts` alone. A single-use nonce from `GET /account/session/challenge`
+  (`did/session_nonce.rs`) closes that — consumed on first use, so a replay fails
+  because the nonce is already spent, however fresh `ts` still is.
+  Deliberately not bound to any account or device: the challenge endpoint
+  itself is uncredentialed (next point), so tying the nonce to an identity
+  would add no protection the signature doesn't already provide, and the
+  in-memory set isn't persisted — at a 60s TTL, a restart loses nothing worth
+  keeping.
+
+Four routes carry this at runtime (`did/devices.rs`), and which ones require an
+existing credential is not uniform, on purpose:
+
+| Route | Guard | Why |
+|---|---|---|
+| `GET /account/session/challenge` | none | issues the nonce login needs; a nonce authorises nothing by itself |
+| `POST /account/session` (login) | none — the device signature *is* the credential | replaces a static bearer with something that expires and can be revoked per device |
+| `POST /account/devices` (vouch a new device) | none — the vouch signature *is* the credential | this is what makes fully cold recovery possible: mnemonic only, fresh install, no prior session to authenticate with |
+| `GET`/`DELETE /account/devices` | `authenticate()` | listing/revoking acts on an account that already exists, so the caller must already hold one of its credentials |
+
+All four share one route pattern and dispatch on method inside
+(`server.rs::account_devices`) — splitting them by pattern is the exact
+production incident `gomux.rs`'s header describes.
+
+### 2.3 Three ways to open a domain to self-service creation
+
+`DomainConfig` has three modes, checked in this strictness order
+(`did/provision.rs::may_provision`) because each is a stronger, more specific
+statement than the one after it:
+
+1. **`authorized_did_domain`** — admits identities by where their `did:webvh`
+   is rooted, and holds them to their own name: `did:webvh:{scid}:{that
+   domain}:{username}` may have `{username}@{this mail domain}`, nothing
+   else. The check is a string parse and two comparisons
+   (`did/webvh_id.rs`/`did_domain_gate`) — no anchor round trip, no network. When
+   set, it is the **only** thing consulted: an operator who named a domain
+   they trust said something more specific than "open", and letting
+   `allow_provision` also be true would silently discard that.
+
+   **It is `Option<String>`, never `Vec<String>`.** A mail domain names AT
+   MOST ONE did-domain. This is not a limitation worked around elsewhere — it
+   is what makes the mode need no separate claim registry: with exactly one
+   did-domain per mail domain, the `did:webvh` log store's own
+   append-only-per-(domain,username) shape already IS the non-duplication
+   guarantee (one log per name, first writer wins). A list of N did-domains
+   sharing one mail domain would reopen the gap a registry exists to close —
+   two different did-domains could both mint an `alice`, and something would
+   have to decide, first-come, which `alice@here` actually is. Pinning 1:1 is
+   what lets that something be "nothing" instead of a new stateful service.
+
+   Configured as an explicit pair per mail domain — `config.example.json`:
+
+   ```json
+   "domain": {
+     "biset.md":   { "authorized_did_domain": "biset.md" },
+     "t.biset.md": { "authorized_did_domain": "t.biset.md" }
+   }
+   ```
+
+   **The relay's own domain is not implicit.** `biset.md` admits `biset.md`
+   identities because it says so, same value on both sides — there is one
+   rule, and "my own domain" is not a special case of it. A future
+   third-party domain — some operator's `example.com` identities landing on
+   this relay's `example.biset.md` — is the identical shape, one more pair,
+   not a different code path
+   (`the_relays_own_domain_is_not_implicitly_authorized`,
+   `an_identity_from_the_named_domain_may_have_its_own_name` in
+   `provision/tests.rs`).
+
+   That third-party case is not yet reachable end to end: this relay resolves
+   `did:webvh` documents by asking its own anchor (§2.7), and the anchor today
+   only serves logs it hosts itself. A pair naming a domain the anchor does
+   not host cannot be verified — `authorized_did_domain` will accept the
+   config, but every provision against it fails at the anchor's resolve, not
+   silently. Making that case real needs the anchor to resolve an ARBITRARY
+   did-domain's log over HTTPS (not just its own store), which needs its own
+   SSRF posture before it is safe to point at operator-supplied domains —
+   tracked, not yet built.
+
+2. **`allow_provision`** — open to anyone.
+3. **`provision_secret`** — open to anyone holding the string. An empty
+   secret must never match an empty submitted one.
+
+A domain with none of the three set is not creatable at all, which is how a
+privileged domain is configured on purpose.
+
+Two more rules `POST /account/provision` (`server.rs::account_provision`)
+enforces regardless of which mode admitted the request:
+
+- **`name_is_taken` checks both credential shapes** — `auth_token_hash` (the
+  older static credential) and a `devices/` entry (what this flow itself
+  writes). Checking only one hands an existing account to whoever asks for
+  it next.
+- **The account cannot exist without a working device credential.** The vouch
+  is verified and written *before* the account is registered
+  (`did/provision.rs`'s own header), so there is no "create now, add a device
+  later" gap for someone else to walk into.
+- **Every DID method needs the anchor now.** `did:dht`'s identifier was its
+  own root key, so a vouch verified locally with no anchor at all
+  (`provision::VouchPath::Local`, since removed). A `did:webvh` root key
+  lives only in a resolved log — an anchorless relay says so and refuses,
+  rather than silently accepting an unverifiable vouch.
+
+### 2.4 Binding a DID after the fact
+
+`PUT /account/did` (`did/bind.rs`, `server.rs::account_did`, anchor build
+only) is the lazy-migration path: an address provisioned before this relay
+knew about DIDs binds one on next login, rather than never getting one.
+
+- **The target account comes only from Basic Auth, never the body.** Taking it
+  from the body would let anyone with a self-service account bind a DID to
+  somebody else's address.
+- **Basic Auth and `did_sig` prove two different things.** Basic Auth proves
+  the caller owns the *account*; it says nothing about whether they own the
+  *DID* they're naming. Before `did_sig` was required, any self-service
+  account could have a stranger's DID bound to it, and the anchor would then
+  publish a claim asserting that — owning an account was never evidence of
+  owning an identity.
+- **An anchorless relay answers `no identity anchor` before it even looks at
+  `did_sig`** (`did_bind::decide`'s explicit ordering) — the missing
+  signature isn't the caller's real problem when nothing they send would work
+  anyway. This used to answer `204` instead, reporting success for work it
+  had neither done nor could do; the caller treating the call as best-effort
+  was never license to lie to it.
+
+The anchor is the one that judges the proof (§2.7's `verify_binding`/`claim`)
+— this relay only carries it, same "decide who to ask, not whether they're
+good" split as §2.1.
+
+### 2.5 What "an account exists" means
+
+Two files sit in every account directory (`auth_env.rs`):
+
+```
+<acctDir>/auth_token_hash   base64(sha256(scoped token))  — what login checks
+<acctDir>/envelope.json     cryptenv.Envelope             — the client's key material
+```
+
+They are separate on purpose. The envelope carries its own token hash, but
+login never uses it: that token is scoped per relay, so one stolen from
+another relay is useless here — and an account with no envelope at all (a
+DID-less or third-party account) still has to be able to log in.
+
+**An account exists iff `auth_token_hash` exists.** Every existence check in
+the relay uses that file and never `envelope.json` (SPEC.md §2) — an account
+created by the signature flow (§2.2) has no envelope, and treating the
+envelope as the marker 404s it.
+
+This rule used to read "`auth_token_hash` **or** a device key". Neither
+implementation actually does that, and the difference is not academic: a
+production relay was found holding an account with a device key, sessions and
+PGP keys but no `auth_token_hash`, which **both** binaries delete on their
+next start-up under the narrower rule. Go's rule is reproduced here (§5 uses
+it too, for the startup sweep and the recovery scan); whether to diverge from
+it is SPEC.md's question, not this document's, but a description that
+flatters the code is worse than none.
+
+`authenticate()` (`auth_env.rs`) checks a session token from device login
+first, then falls back to the static `auth_token_hash` — and confirms the
+account is configured or dynamically registered **before** the static check,
+not after: skipping that ordering would authenticate any `<anything>@domain`
+whose directory merely happens to exist.
+
+### 2.6 Aliases: SCID-primary and the reconcile backstop
+
+A SCID-primary account's immutable primary is `{scid}@{domain}`; its
+human-chosen alias is whatever its bound DID's *current* did:webvh identifier
+names (biset's PLANSCID.md). `GET`/`POST /account/alias`
+(`server.rs::account_alias`) is the eager path — a rename adds the new
+address and removes the old one immediately — and it is explicitly
+best-effort on the remove side (biset's `edit-identity.ts`, `.catch(() =>
+false)`), so a crashed client or a lost race can leave a stale alias behind
+with nothing to clean it up.
+
+`did/alias_reconcile.rs` is the backstop, on the same cadence as §5's inactive
+sweep: for every SCID-primary account it asks the anchor
+(`jmapserver::anchor::current_alias`, §2.7) what the bound DID currently
+claims, and reconciles the local alias set to match exactly — one address if
+the DID's current location is on this relay's own domain, none otherwise
+(deactivated, or moved to a domain this relay doesn't serve). A `NotBound` or
+`Unknown` answer changes nothing that cycle — an anchor outage must never look
+like every renamed identity abandoning its address at once.
+
+The anchor side of this is `ClaimStore.rebind` (biset's
+`src/anchor/store.ts`, not this repo): the DID string the anchor recorded at
+bind time is never updated by an ordinary rename, so — without rebinding it
+to the identity's current location on every successful resolve — a stale
+pointer whose OWN original location later falls to the anchor's did:webvh
+sweep (a separate TTL, on the *location*, not the alias) would make the
+identity unresolvable and `current_alias` would misreport a live account as
+gone.
+
+### 2.7 The anchor client
+
+`crates/jmapserver/src/did/anchor.rs` is the whole DID-cryptography boundary: this
+relay forwards proofs, it does not check them, so that logic lives in ONE
+place rather than being upgraded in lockstep across every relay that might
+run it.
+
+| Function | Asks the anchor to… |
+|---|---|
+| `claim` | record which DID owns `localpart@domain` (§2.3, §2.4) |
+| `verify_binding` | verify a proof WITHOUT recording a claim — `authorized_did_domain`'s counterpart to `claim`, since that mode's own non-duplication guarantee makes a registry entry redundant |
+| `vouch_device` | check whether a DID's *current* root key authorises a device (§2.2) |
+| `release`/`release_ok` | forget a claim, so the name can be provisioned again |
+| `current_alias` | what a bound DID currently claims as its address (§2.6) |
+| `drain` | release every name at once, for turning a relay anchorless without stranding them |
+
+`Verdict` (`Ok`/`Conflict`/`Invalid`/`Error`) and `AliasLookup`
+(`NotBound`/`Unknown`/`Resolved`) both exist to keep two outcomes apart that
+callers must never confuse: the anchor *looking and saying no* versus the
+anchor being *unreachable*. Every call here is best-effort in one direction
+and fatal in the other — an unreachable anchor must never block deleting an
+account (the user asked to leave), but it **must** block creating one (an
+unbound name can be claimed by somebody else later, and the collision
+surfaces as the original owner losing their address).
+
+### 2.8 Route guards for this surface
+
+`routes.rs`'s `Guard` enum is one of four values for every route in the
+table, this surface's routes among them:
+
+| Route | Guard | Why |
+|---|---|---|
+| `POST /account/provision` | `SelfAuth` | the vouch signature is the credential (§2.3) |
+| `GET /account/session/challenge` | `Open` | a nonce authorises nothing by itself (§2.2) |
+| `POST /account/session` | `SelfAuth` | the device signature is the credential (§2.2) |
+| `POST`/`GET`/`DELETE /account/devices` | `SelfAuth` (POST) / `Account` (GET, DELETE) | cold recovery needs POST uncredentialed; GET/DELETE act on an existing account (§2.2) |
+| `POST /account/did` | `Account` (anchor build only) | the target comes from Basic Auth, `did_sig` is checked separately (§2.4) |
+| `GET`/`POST /account/alias` | `Account` | scoped to the authenticated account only — the target primary never comes from the body (§2.6) |
+| `POST /account/migrate-to-scid` | `Account` | a one-time move onto SCID-primary, never an ordinary rename (that's `/account/alias`) |
+| `POST /account/delete` | `Account` | routing (the alias table) is dropped before the account's data, so a partial failure never leaves aliases pointing at data that's gone |
 
 ---
 
@@ -176,18 +380,10 @@ preferences, and both are named at the call site:
   main one, so it has a window where exactly that is true — measured at
   roughly one connect in three (SPEC.md §11.18).
 
-An account exists **iff** it has an `auth_token_hash` — never by
+An account exists **iff** it has an `auth_token_hash` (§2.5) — never by
 `envelope.json`, which a third-party or DID-only account does not have. The
-sweep and the recovery scan use the same rule; if they disagreed, one would
-delete what the other restores.
-
-This paragraph used to say "`auth_token_hash` **or** a device key". Neither
-implementation does that, and the difference is not academic: a production
-relay was found holding an account with a device key, sessions and PGP keys
-but no `auth_token_hash`, which **both** binaries delete on their next
-start-up. Go's rule is reproduced here; whether to diverge from it is
-SPEC.md's question, not this document's, but a description that flatters the
-code is worse than none.
+startup sweep and the recovery scan use the same rule; if they disagreed, one
+would delete what the other restores.
 
 ---
 

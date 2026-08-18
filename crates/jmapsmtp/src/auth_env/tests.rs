@@ -172,7 +172,7 @@ fn a_session_token_authenticates_without_the_static_one() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = account_dir(tmp.path(), "example.com", "alice");
     std::fs::create_dir_all(&dir).unwrap();
-    let session = jmapserver::devicekeys::issue_session_token(&dir, "dev1", 3600, now()).unwrap();
+    let session = jmapserver::did::devicekeys::issue_session_token(&dir, "dev1", 3600, now()).unwrap();
 
     // No auth_token_hash at all: this account exists only through its device.
     let cfg = cfg_with(&["alice"]);
@@ -195,12 +195,12 @@ fn revoking_the_device_ends_the_session_at_once() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = account_dir(tmp.path(), "example.com", "alice");
     std::fs::create_dir_all(&dir).unwrap();
-    let session = jmapserver::devicekeys::issue_session_token(&dir, "dev1", 3600, now()).unwrap();
+    let session = jmapserver::did::devicekeys::issue_session_token(&dir, "dev1", 3600, now()).unwrap();
     let cfg = cfg_with(&["alice"]);
     let dynamic = DynAccounts::default();
     assert!(authenticate(&cfg, &dynamic, tmp.path(), "alice@example.com", &session).is_some());
 
-    jmapserver::devicekeys::remove_device_key(&dir, "dev1").unwrap();
+    jmapserver::did::devicekeys::remove_device_key(&dir, "dev1").unwrap();
     assert_eq!(
         authenticate(&cfg, &dynamic, tmp.path(), "alice@example.com", &session),
         None
@@ -213,7 +213,7 @@ fn an_expired_session_token_is_rejected() {
     let dir = account_dir(tmp.path(), "example.com", "alice");
     std::fs::create_dir_all(&dir).unwrap();
     let session =
-        jmapserver::devicekeys::issue_session_token(&dir, "dev1", 3600, now() - 7200).unwrap();
+        jmapserver::did::devicekeys::issue_session_token(&dir, "dev1", 3600, now() - 7200).unwrap();
     assert_eq!(
         authenticate(
             &cfg_with(&["alice"]),

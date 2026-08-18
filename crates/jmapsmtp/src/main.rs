@@ -139,6 +139,15 @@ async fn run() -> Result<(), String> {
     //     no sweep at all rather than one that wakes to do nothing.
     jmapsmtp::delivery::spawn_maintenance(state.clone());
 
+    // 13b. Alias reconciliation against each SCID-primary account's bound
+    //      DID (PLANSCID.md's backstop for edit-identity.ts's eager
+    //      add/remove-on-rename). Returns without starting a timer when no
+    //      anchor is configured, same "no setting, no timer" shape as
+    //      maintenance above. Anchor build only — same gate as the module
+    //      itself, nothing to reconcile against without one.
+    #[cfg(feature = "anchor")]
+    jmapsmtp::did::alias_reconcile::spawn_alias_reconcile(state.clone());
+
     // 14. SMTP, before the HTTP listener: a relay that accepts JMAP but not
     //     mail is worse than one that is not up yet, because monitoring reads
     //     it as healthy.

@@ -9,24 +9,21 @@
 
 pub mod activity;
 pub mod admin;
-pub mod anchor;
 pub mod authtoken;
 pub mod contacts;
-pub mod devicebind;
-pub mod devicekeys;
+pub mod did;
 pub mod dispatch;
 pub mod methods;
 pub mod mime;
 pub mod push;
 pub mod refs;
 pub mod server;
-pub mod session_nonce;
 pub mod storage;
 pub mod store;
 pub mod zbase32;
 
 pub use authtoken::{decode_auth_token, hash_auth_token, verify_auth_token};
-pub use devicekeys::DeviceKey;
+pub use did::devicekeys::DeviceKey;
 pub use methods::{MethodError, MethodResult};
 pub use mime::{
     Attachment, build_envelope, extract_attachments, format_rfc1123z, message_body,

@@ -8,7 +8,7 @@
 //! have to be upgraded in lockstep with every DID method.
 //!
 //! The one exception is `did:dht`, which is self-certifying and verified
-//! locally (see [`crate::devicebind`]). Everything else needs the anchor.
+//! locally (see [`crate::did::devicebind`]). Everything else needs the anchor.
 //!
 //! # Every call is best-effort in one direction and fatal in the other
 //!
@@ -349,6 +349,92 @@ pub fn release_ok(transport: &dyn Transport, anchor: &Ref, localpart: &str, doma
 /// to leave, and the claim can be cleaned up later.
 pub fn release(transport: &dyn Transport, anchor: &Ref, localpart: &str, domain: &str) {
     let _ = release_ok(transport, anchor, localpart, domain);
+}
+
+/// What [`current_alias`] found out about `localpart@domain`'s bound DID.
+///
+/// Three-way, not a bool or an `Option`, because the caller (jmapsmtp's
+/// alias-reconcile sweep) must react differently to each: `NotBound` means
+/// leave every alias alone (a pre-SCID account, or one that never bound a
+/// DID, is not this sweep's business); `Unknown` means the same — do
+/// nothing — but for the opposite reason, an inconclusive check must never
+/// be read as "the DID is gone" or a network hiccup would delete real
+/// aliases; only `Resolved` carries an answer worth acting on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AliasLookup {
+    /// No claim recorded for this primary at all.
+    NotBound,
+    /// The anchor could not be reached, or its answer could not be parsed —
+    /// deliberately NOT the same outcome as "the DID says nothing", since a
+    /// transient failure must never be mistaken for permission to delete.
+    Unknown,
+    /// The claimed DID resolved. `None`/`None` — not `Some`/`Some` — means
+    /// the identity currently claims no address here at all (deactivated, or
+    /// its did:webvh location moved off this domain entirely): every alias
+    /// for this primary should be removed, same as any other case where
+    /// `Resolved` doesn't match what is currently on file.
+    Resolved {
+        username: Option<String>,
+        domain: Option<String>,
+    },
+}
+
+/// Asks the anchor what `localpart@domain`'s bound DID **currently** claims
+/// as its address — the read half of the reclaim work this pairs with
+/// (webvh-server/core.ts's same-SCID reclaim, webvh-sweep.ts's TTL cleanup):
+/// this is that same "does the log still name this location" question, asked
+/// on behalf of jmapsmtp's alias table instead of a did:webvh host's own.
+///
+/// Deliberately a NEW, separately-named route rather than reusing
+/// `GET /_anchor/identity/<localpart>` — that path's GET is a hard 404 by
+/// design (anchor/server.ts's own header: address→DID discovery needs no
+/// read route at all, the did.jsonl path convention already answers it).
+/// This is a different question — "what does the anchor say the CURRENT
+/// alias should be" — asked by this relay's own maintenance sweep, not the
+/// public, so it lives under `/_anchor/*` gated the same as every other
+/// relay-internal call here (`Bearer relay_token`).
+pub fn current_alias(
+    transport: &dyn Transport,
+    anchor: &Ref,
+    localpart: &str,
+    domain: &str,
+) -> AliasLookup {
+    if !anchor.is_configured() {
+        return AliasLookup::Unknown;
+    }
+    let url = anchor.endpoint(&format!(
+        "/_anchor/alias-target/{localpart}?domain={}",
+        query_escape(domain)
+    ));
+    let Some((status, body)) = transport.send("GET", &url, &anchor.token, None) else {
+        return AliasLookup::Unknown;
+    };
+    match status {
+        404 => AliasLookup::NotBound,
+        200 => {
+            #[derive(serde::Deserialize)]
+            #[serde(rename_all = "camelCase")]
+            struct Resp {
+                current_username: Option<String>,
+                current_domain: Option<String>,
+            }
+            match serde_json::from_str::<Resp>(&body) {
+                Ok(r) => AliasLookup::Resolved {
+                    username: r.current_username,
+                    domain: r.current_domain,
+                },
+                Err(_) => AliasLookup::Unknown,
+            }
+        }
+        403 => {
+            eprintln!(
+                "[anchor] REFUSED THIS RELAY ({}) on alias lookup for {localpart}@{domain} — check anchor_token",
+                anchor.url
+            );
+            AliasLookup::Unknown
+        }
+        _ => AliasLookup::Unknown,
+    }
 }
 
 /// One name at the anchor.

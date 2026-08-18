@@ -226,7 +226,7 @@ pub fn did_domain_gate(dom_cfg: &DomainConfig, did: &str, username: &str) -> Res
     let Some(authorized) = &dom_cfg.authorized_did_domain else {
         return Err(Refusal::DidDomainNotAuthorized);
     };
-    let id = crate::webvh_id::parse(did).map_err(|_| Refusal::DidNotReadable)?;
+    let id = crate::did::webvh_id::parse(did).map_err(|_| Refusal::DidNotReadable)?;
     if !authorized.eq_ignore_ascii_case(&id.domain) {
         return Err(Refusal::DidDomainNotAuthorized);
     }
@@ -284,7 +284,7 @@ pub fn name_is_taken(
 ) -> bool {
     already_registered
         || !crate::auth_env::read_auth_hash(data_dir, domain, localpart).is_empty()
-        || !jmapserver::devicekeys::list_device_keys(acct_dir).is_empty()
+        || !jmapserver::did::devicekeys::list_device_keys(acct_dir).is_empty()
 }
 
 /// How this relay can check the DID's vouch for the device.

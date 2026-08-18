@@ -11,9 +11,9 @@
 
 use base64::Engine as _;
 use ed25519_dalek::{Signer as _, SigningKey};
-use jmapserver::devicebind;
+use jmapserver::did::devicebind;
 use jmapserver::zbase32;
-use jmapsmtp::devices::{DeviceError, SessionRequest, VouchRequest, check_vouch};
+use jmapsmtp::did::devices::{DeviceError, SessionRequest, VouchRequest, check_vouch};
 
 mod oracle_harness;
 use oracle_harness::Oracle;
@@ -193,14 +193,14 @@ fn the_oracle_accepts_a_did_dht_vouch_where_this_port_needs_an_anchor() {
             &s.vouch("Laptop", ts),
             ts
         ),
-        Err(jmapsmtp::devices::DeviceError::AnchorRequired),
+        Err(jmapsmtp::did::devices::DeviceError::AnchorRequired),
         "the oracle verified it from the identifier; this port has no did:dht \
          path and no anchor, and says so rather than accepting it unchecked"
     );
 
     // The device is on disk under its own pubkey.
     let acct = o.data_dir().join("a.test/alice");
-    let keys = jmapserver::devicekeys::list_device_keys(&acct);
+    let keys = jmapserver::did::devicekeys::list_device_keys(&acct);
     assert_eq!(keys.len(), 1);
     assert_eq!(keys[0].id, s.device_id);
     assert_eq!(keys[0].label, "Laptop");
@@ -212,7 +212,7 @@ fn the_oracle_accepts_a_did_dht_vouch_where_this_port_needs_an_anchor() {
     assert_eq!(parsed["email"], "alice@a.test");
     assert_eq!(
         parsed["expires_in"],
-        jmapsmtp::devices::SESSION_TOKEN_TTL_SECS,
+        jmapsmtp::did::devices::SESSION_TOKEN_TTL_SECS,
         "the TTL is part of the response contract"
     );
     assert!(parsed["token"].as_str().is_some_and(|t| !t.is_empty()));
@@ -322,7 +322,7 @@ fn this_port_refuses_the_vouches_the_oracle_refuses() {
 
     // Nothing got registered by any of them.
     assert!(
-        jmapserver::devicekeys::list_device_keys(&o.data_dir().join("a.test/alice")).is_empty(),
+        jmapserver::did::devicekeys::list_device_keys(&o.data_dir().join("a.test/alice")).is_empty(),
         "a refused vouch must not leave a device behind"
     );
 }
@@ -446,7 +446,7 @@ fn revoking_a_device_is_immediate_on_both_implementations() {
 
     // Revoke through the API, authenticated with the session token itself.
     let acct = o.data_dir().join("a.test/alice");
-    jmapserver::devicekeys::remove_device_key(&acct, &s.device_id).unwrap();
+    jmapserver::did::devicekeys::remove_device_key(&acct, &s.device_id).unwrap();
 
     // The device cannot log in again…
     let (status, _) = o.post_json("/account/session", &session_body(&s.legacy_session(now())));
@@ -454,7 +454,7 @@ fn revoking_a_device_is_immediate_on_both_implementations() {
 
     // …and the token it already held is gone, not merely unrenewable.
     assert!(
-        jmapserver::devicekeys::check_session_token(&acct, &token, now()).is_none(),
+        jmapserver::did::devicekeys::check_session_token(&acct, &token, now()).is_none(),
         "a revocation that leaves live tokens working is not a revocation"
     );
 }

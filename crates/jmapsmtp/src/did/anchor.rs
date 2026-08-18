@@ -7,13 +7,13 @@
 
 use std::sync::Arc;
 
-use jmapserver::anchor::{Ref, Transport, Verdict};
+use jmapserver::did::anchor::{Ref, Transport, Verdict};
 
 /// A blocking HTTP transport.
 ///
 /// Blocking rather than async because the callers are the synchronous decision
 /// handlers, and because these calls are bounded by
-/// [`jmapserver::anchor::TIMEOUT`] — a request a user is waiting on cannot be
+/// [`jmapserver::did::anchor::TIMEOUT`] — a request a user is waiting on cannot be
 /// allowed to hang regardless of which style it is written in.
 pub struct HttpTransport;
 
@@ -29,7 +29,7 @@ impl HttpTransport {
         static CLIENT: std::sync::OnceLock<reqwest::blocking::Client> = std::sync::OnceLock::new();
         CLIENT.get_or_init(|| {
             reqwest::blocking::Client::builder()
-                .timeout(jmapserver::anchor::TIMEOUT)
+                .timeout(jmapserver::did::anchor::TIMEOUT)
                 .build()
                 .unwrap_or_default()
         })
@@ -54,7 +54,7 @@ impl HttpTransport {
 ///
 /// A thread per anchor call is affordable because anchor calls are rare — a
 /// provision, a device vouch, a DID bind — and each already blocks the caller
-/// for up to [`jmapserver::anchor::TIMEOUT`] either way. `scope` keeps the
+/// for up to [`jmapserver::did::anchor::TIMEOUT`] either way. `scope` keeps the
 /// borrow of the arguments rather than forcing every caller to hand over owned
 /// copies.
 fn off_runtime<T: Send>(f: impl FnOnce() -> T + Send) -> T {
@@ -78,7 +78,7 @@ impl Transport for HttpTransport {
         url: &str,
         token: &str,
         body: Option<&[u8]>,
-    ) -> Option<jmapserver::anchor::Relayed> {
+    ) -> Option<jmapserver::did::anchor::Relayed> {
         off_runtime(|| self.forward_blocking(method, url, token, body))
     }
 }
@@ -86,7 +86,7 @@ impl Transport for HttpTransport {
 impl HttpTransport {
     /// The Pkarr gateway's own client, with its own timeout.
     ///
-    /// **40 seconds, against [`jmapserver::anchor::TIMEOUT`]'s 5.** The other
+    /// **40 seconds, against [`jmapserver::did::anchor::TIMEOUT`]'s 5.** The other
     /// calls are decisions a user is waiting on, where slow and down are the
     /// same thing. This one is a DHT traversal at the far end, generous next
     /// to the anchor's own 30s: a traversal still going is worth waiting for,
@@ -107,7 +107,7 @@ impl HttpTransport {
         url: &str,
         token: &str,
         body: Option<&[u8]>,
-    ) -> Option<jmapserver::anchor::Relayed> {
+    ) -> Option<jmapserver::did::anchor::Relayed> {
         let method = reqwest::Method::from_bytes(method.as_bytes()).ok()?;
         let mut request = Self::gateway_client()
             .request(method, url)
@@ -129,7 +129,7 @@ impl HttpTransport {
             .and_then(|v| v.to_str().ok())
             .map(|s| s.to_string());
         let body = response.bytes().ok()?.to_vec();
-        Some(jmapserver::anchor::Relayed {
+        Some(jmapserver::did::anchor::Relayed {
             status,
             content_type,
             body,
@@ -173,27 +173,27 @@ pub fn anchor_ref(cfg: &crate::config::Config) -> Ref {
 }
 
 /// Map an anchor verdict onto the refusal a provisioning request gets.
-pub fn provision_refusal(verdict: Verdict) -> Option<crate::provision::Refusal> {
+pub fn provision_refusal(verdict: Verdict) -> Option<crate::did::provision::Refusal> {
     match verdict {
         Verdict::Ok => None,
-        Verdict::Conflict => Some(crate::provision::Refusal::IdentityOwnedByAnother),
-        Verdict::Invalid => Some(crate::provision::Refusal::DidBindingRejected),
+        Verdict::Conflict => Some(crate::did::provision::Refusal::IdentityOwnedByAnother),
+        Verdict::Invalid => Some(crate::did::provision::Refusal::DidBindingRejected),
         // Never "proceed unanchored": an unbound name can be claimed by
         // somebody else later, and the collision surfaces as the original
         // owner losing their address.
-        Verdict::Error => Some(crate::provision::Refusal::AnchorUnavailable),
+        Verdict::Error => Some(crate::did::provision::Refusal::AnchorUnavailable),
     }
 }
 
 /// Map an anchor verdict onto the refusal a device vouch gets.
-pub fn device_error(verdict: Verdict) -> Option<crate::devices::DeviceError> {
+pub fn device_error(verdict: Verdict) -> Option<crate::did::devices::DeviceError> {
     match verdict {
         Verdict::Ok => None,
-        Verdict::Invalid => Some(crate::devices::DeviceError::VouchRejected),
+        Verdict::Invalid => Some(crate::did::devices::DeviceError::VouchRejected),
         // A conflict on a vouch means the claim registry disagrees, which is
         // the anchor rejecting it rather than being unreachable.
-        Verdict::Conflict => Some(crate::devices::DeviceError::VouchRejected),
-        Verdict::Error => Some(crate::devices::DeviceError::AnchorUnavailable),
+        Verdict::Conflict => Some(crate::did::devices::DeviceError::VouchRejected),
+        Verdict::Error => Some(crate::did::devices::DeviceError::AnchorUnavailable),
     }
 }
 

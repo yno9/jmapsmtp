@@ -7,8 +7,8 @@
 use super::*;
 use base64::Engine as _;
 use ed25519_dalek::{Signer as _, SigningKey};
-use jmapserver::devicebind;
-use jmapserver::session_nonce::SessionNonceStore;
+use jmapserver::did::devicebind;
+use jmapserver::did::session_nonce::SessionNonceStore;
 use pretty_assertions::assert_eq;
 
 fn cfg(json: &str) -> Config {
@@ -121,7 +121,7 @@ fn with_device(s: &Setup) -> tempfile::TempDir {
     let tmp = tempfile::tempdir().unwrap();
     let acct = crate::auth_env::account_dir(tmp.path(), "a.test", "alice");
     std::fs::create_dir_all(&acct).unwrap();
-    jmapserver::devicekeys::write_device_key(
+    jmapserver::did::devicekeys::write_device_key(
         &acct,
         &jmapserver::DeviceKey {
             id: s.device_id.clone(),
@@ -185,7 +185,7 @@ fn a_vouch_needs_no_label() {
     // did:webvh SCID, so the answer is now *where to ask*, not *is it good*.
     assert_eq!(
         check_vouch(&anchored(), &s.vouch("", NOW), NOW),
-        Ok(crate::provision::VouchPath::Anchor)
+        Ok(crate::did::provision::VouchPath::Anchor)
     );
     assert_eq!(
         check_vouch(&anchorless(), &s.vouch("", NOW), NOW),
@@ -299,7 +299,7 @@ fn a_revoked_device_cannot_log_in() {
     assert!(login(tmp.path(), &s.session_fresh(NOW, &nonces), RELAY_HOST, &nonces, NOW).is_ok());
 
     let acct = crate::auth_env::account_dir(tmp.path(), "a.test", "alice");
-    jmapserver::devicekeys::remove_device_key(&acct, &s.device_id).unwrap();
+    jmapserver::did::devicekeys::remove_device_key(&acct, &s.device_id).unwrap();
 
     assert_eq!(
         login(tmp.path(), &s.session_fresh(NOW, &nonces), RELAY_HOST, &nonces, NOW).err(),
@@ -332,7 +332,7 @@ fn a_cold_recovery_needs_no_existing_credential() {
 
     assert_eq!(
         check_vouch(&anchored(), &req, NOW),
-        Ok(crate::provision::VouchPath::Anchor)
+        Ok(crate::did::provision::VouchPath::Anchor)
     );
     write_device(tmp.path(), "a.test", "alice", &req, NOW).unwrap();
 
@@ -379,7 +379,7 @@ fn a_forged_vouch_is_not_rejected_here_but_sent_to_the_anchor() {
     };
     assert_eq!(
         check_vouch(&anchored(), &req, NOW),
-        Ok(crate::provision::VouchPath::Anchor),
+        Ok(crate::did::provision::VouchPath::Anchor),
         "the relay has no key to check this against; the anchor decides"
     );
     assert_eq!(
@@ -401,7 +401,7 @@ fn a_replayed_label_and_a_stale_timestamp_are_the_anchors_business() {
     };
     assert_eq!(
         check_vouch(&anchored(), &relabelled, NOW),
-        Ok(crate::provision::VouchPath::Anchor)
+        Ok(crate::did::provision::VouchPath::Anchor)
     );
     assert_eq!(
         check_vouch(&anchorless(), &relabelled, NOW),
@@ -411,7 +411,7 @@ fn a_replayed_label_and_a_stale_timestamp_are_the_anchors_business() {
     for ts in [NOW - 10_000, NOW + 10_000] {
         assert_eq!(
             check_vouch(&anchored(), &s.vouch("Laptop", ts), NOW),
-            Ok(crate::provision::VouchPath::Anchor),
+            Ok(crate::did::provision::VouchPath::Anchor),
             "ts {ts}"
         );
         assert_eq!(
@@ -452,7 +452,7 @@ fn with_an_anchor_a_non_did_dht_vouch_goes_to_it() {
         };
         assert_eq!(
             check_vouch(&anchored(), &req, NOW),
-            Ok(crate::provision::VouchPath::Anchor)
+            Ok(crate::did::provision::VouchPath::Anchor)
         );
     }
 }
@@ -476,7 +476,7 @@ fn an_account_exists_by_either_credential_shape() {
     let s = setup();
     let acct = crate::auth_env::account_dir(tmp.path(), "a.test", "modern");
     std::fs::create_dir_all(&acct).unwrap();
-    jmapserver::devicekeys::write_device_key(
+    jmapserver::did::devicekeys::write_device_key(
         &acct,
         &jmapserver::DeviceKey {
             id: s.device_id.clone(),

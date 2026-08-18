@@ -1,7 +1,7 @@
 //! The order of the checks is the contract; each test names which one it pins.
 
 use super::*;
-use jmapserver::anchor::Verdict;
+use jmapserver::did::anchor::Verdict;
 use pretty_assertions::assert_eq;
 
 fn body(json: &str) -> Vec<u8> {

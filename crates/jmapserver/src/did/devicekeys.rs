@@ -28,7 +28,7 @@ use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::devicebind;
+use crate::did::devicebind;
 
 /// One device's authorised signing key.
 ///

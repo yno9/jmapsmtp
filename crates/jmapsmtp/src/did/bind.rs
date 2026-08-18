@@ -110,10 +110,10 @@ pub fn decide(anchor_configured: bool, body: &[u8]) -> Result<BindRequest, Refus
 /// The anchor's answer, translated into what the client is told.
 ///
 /// `Invalid` becomes a bare 401: *why* a proof failed is not the client's
-/// business, and [`jmapserver::anchor::claim`] has already logged the reason
+/// business, and [`jmapserver::did::anchor::claim`] has already logged the reason
 /// where an operator can find it.
-pub fn from_verdict(verdict: jmapserver::anchor::Verdict) -> Option<Refusal> {
-    use jmapserver::anchor::Verdict;
+pub fn from_verdict(verdict: jmapserver::did::anchor::Verdict) -> Option<Refusal> {
+    use jmapserver::did::anchor::Verdict;
     match verdict {
         Verdict::Ok => None,
         Verdict::Invalid => Some(Refusal::BindingRejected),

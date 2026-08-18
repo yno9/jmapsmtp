@@ -314,7 +314,7 @@ fn a_name_is_taken_by_either_credential_shape() {
     // The newer shape, on a different name and with no hash at all.
     let acct_b = crate::auth_env::account_dir(data, "a.test", "bob");
     std::fs::create_dir_all(&acct_b).unwrap();
-    jmapserver::devicekeys::write_device_key(
+    jmapserver::did::devicekeys::write_device_key(
         &acct_b,
         &jmapserver::DeviceKey {
             id: "DEVKEY".into(),
@@ -431,7 +431,7 @@ fn an_identity_from_a_different_domain_is_refused() {
 /// The whole reason the append-only log store doubles as address exclusivity:
 /// a DID gets its own localpart and no other. This is also what a 1:1
 /// mail-domain:did-domain pairing needs no separate claim registry to
-/// enforce — see [`crate::provision::did_domain_gate`]'s own note.
+/// enforce — see [`crate::did::provision::did_domain_gate`]'s own note.
 #[test]
 fn an_identity_may_not_ask_for_somebody_elses_name() {
     let dom_cfg = by_did_domain("biset.md");

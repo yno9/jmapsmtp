@@ -13,10 +13,10 @@
 //! (SPEC.md §10-A). An anchored oracle would try to reach a real anchor.
 
 use ed25519_dalek::{Signer as _, SigningKey};
-use jmapserver::devicebind;
+use jmapserver::did::devicebind;
 use jmapserver::zbase32;
 use jmapsmtp::config::{Config, DynamicDomains};
-use jmapsmtp::provision::{
+use jmapsmtp::did::provision::{
     ProvisionRequest, Refusal, VouchPath, may_provision, resolve_domain, validate, vouch_path,
 };
 
@@ -300,7 +300,7 @@ fn a_second_request_for_the_same_name_conflicts_on_both_implementations() {
     // the shape a hash-only collision check misses.
     let acct = o.data_dir().join("open.test/taken");
     assert!(
-        !jmapserver::devicekeys::list_device_keys(&acct).is_empty(),
+        !jmapserver::did::devicekeys::list_device_keys(&acct).is_empty(),
         "the device key is the credential"
     );
     assert!(
@@ -317,7 +317,7 @@ fn a_second_request_for_the_same_name_conflicts_on_both_implementations() {
     assert_eq!(status, Refusal::UsernameTaken.status());
 
     assert!(
-        jmapsmtp::provision::name_is_taken(&acct, &o.data_dir(), "open.test", "taken", false),
+        jmapsmtp::did::provision::name_is_taken(&acct, &o.data_dir(), "open.test", "taken", false),
         "this port agrees the name is taken, on the same files"
     );
 }
@@ -343,7 +343,7 @@ fn the_response_reports_an_unbound_did_on_an_anchorless_relay() {
         "a did was sent, and this relay cannot bind it"
     );
     assert!(
-        !jmapsmtp::provision::did_bound(&rust_config(), &request(&id, "mallory", "open.test")),
+        !jmapsmtp::did::provision::did_bound(&rust_config(), &request(&id, "mallory", "open.test")),
         "this port agrees"
     );
 }

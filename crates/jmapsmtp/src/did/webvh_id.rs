@@ -2,11 +2,11 @@
 //!
 //! # Why the relay parses a DID it refuses to verify
 //!
-//! [`crate::anchor`] states the division of labour: DID cryptography lives in
+//! [`crate::did::anchor`] states the division of labour: DID cryptography lives in
 //! the anchor, in one place, so a relay never has to be upgraded in lockstep
 //! with a DID method. That still holds. This module does not verify anything —
 //! no SCID hash, no log, no signature. It reads two strings the identifier
-//! carries in plain text, so that [`crate::provision`] can answer a question
+//! carries in plain text, so that [`crate::did::provision`] can answer a question
 //! that is *policy*, not cryptography: **is this identity's home domain one
 //! this relay accepts accounts from, and is it asking for its own name?**
 //!
@@ -76,7 +76,7 @@ pub enum ParseError {
 /// the same reason — a name that escapes its own directory addresses a
 /// different document than the one it claims to be.
 ///
-/// Case is **not** folded here. `crate::provision` compares against an
+/// Case is **not** folded here. `crate::did::provision` compares against an
 /// already-lowercased username, and folding twice in different places is how
 /// the two drift apart.
 pub fn parse(did: &str) -> Result<WebvhId, ParseError> {
