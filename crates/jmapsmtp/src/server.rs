@@ -1747,6 +1747,19 @@ mod handlers {
             if std::fs::remove_dir_all(&dir).is_err() && dir.exists() {
                 return text_error(500, "failed to delete account data");
             }
+            // Best-effort, same as every other anchor side effect here: the
+            // account is already gone locally either way, and an unreachable
+            // anchor must never block that (jmapserver's `release`'s own
+            // docstring). Without this the claim registry keeps naming a DID
+            // that no longer has an account behind it, so any FUTURE claim of
+            // this exact address — by anyone, including the original owner
+            // signing up fresh — 409s forever as "identity owned by a
+            // different key" (found live, 2026-08-19).
+            #[cfg(feature = "anchor")]
+            {
+                let anchor = crate::did::anchor::anchor_ref(&state.cfg);
+                jmapserver::did::anchor::release(state.anchor.as_ref(), &anchor, &localpart, &domain);
+            }
             no_content()
         })();
         set_route_cors(&mut res, "POST, OPTIONS", "Authorization, Content-Type");
